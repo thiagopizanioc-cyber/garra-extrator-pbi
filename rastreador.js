@@ -1,12 +1,10 @@
 const { chromium } = require('playwright');
 
-// A SUA PONTE SECRETA PARA O GOOGLE SHEETS
 const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_md0VVZ1AMq-GqaA_R1AzoTAKDqDFMobL5ajDwJg-EIAIiBX1xCQ/exec';
 
 (async () => {
-  console.log('🚀 Iniciando Robô Nível 2 (Network + Visão Computacional)...');
+  console.log('🚀 Iniciando Robô Nível 2.1 (Bypass de iFrame)...');
   
-  // Abre o navegador em resolução Full HD para garantir que as tabelas apareçam inteiras
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
   const page = await context.newPage();
@@ -14,7 +12,7 @@ const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_m
   let baseDeDados = [["Data_Captura", "Métricas_Lidas", "Dados_Brutos"]];
   const hoje = new Date().toLocaleString('pt-BR');
 
-  // 1. OUVINTE DE REDE (Mantemos isso apenas para pegar os Milhões exatos do VGV)
+  // 1. OUVINTE DE REDE (Mantido para VGV)
   page.on('response', async (response) => {
     if (response.url().includes('querydata')) {
       try {
@@ -32,67 +30,71 @@ const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_m
     }
   });
 
-  console.log('🌐 Acessando Página 1 (Diretoria Lisboa)...');
+  console.log('🌐 Acessando site da Metrocasa...');
   await page.goto('https://construtora-metrocasa.github.io/central/lisboa/Diretoria-Garra-385.html', { waitUntil: 'networkidle' });
-  await page.waitForTimeout(12000); // Aguarda os gráficos renderizarem na tela
+  await page.waitForTimeout(10000); 
 
-  // 2. EXTRAÇÃO VISUAL (Página 1 - Lendo as tabelas na tela)
-  console.log('👁️ Lendo tabela de Vendas (Empreendimento, Estágio, Corretor)...');
-  const tabelasP1 = await page.evaluate(() => {
-      let linhas = [];
-      // Procura todas as linhas visuais na tela
-      document.querySelectorAll('div[role="row"]').forEach(row => {
-          let dadosLinha = [];
-          // Extrai o texto de cada coluna
-          row.querySelectorAll('div[role="columnheader"], div[role="gridcell"]').forEach(cell => {
-              let texto = cell.innerText || cell.getAttribute('title') || '';
-              if(texto.trim()) dadosLinha.push(texto.trim());
+  // ==========================================
+  // A MÁGICA AQUI: ENTRANDO NO IFRAME
+  // ==========================================
+  console.log('🪟 Procurando a janela do Power BI (iFrame)...');
+  const iframeElement = await page.$('iframe');
+  const pbiFrame = await iframeElement.contentFrame();
+
+  if (pbiFrame) {
+      console.log('✅ iFrame detectado! Lendo tabelas da Página 1...');
+      
+      const tabelasP1 = await pbiFrame.evaluate(() => {
+          let linhas = [];
+          document.querySelectorAll('div[role="row"]').forEach(row => {
+              let dadosLinha = [];
+              row.querySelectorAll('div[role="columnheader"], div[role="gridcell"]').forEach(cell => {
+                  let texto = cell.innerText || cell.getAttribute('title') || '';
+                  if(texto.trim()) dadosLinha.push(texto.trim());
+              });
+              if(dadosLinha.length > 0) linhas.push(dadosLinha.join(' | '));
           });
-          // Se achou texto, junta tudo separado por "|"
-          if(dadosLinha.length > 0) linhas.push(dadosLinha.join(' | '));
+          return linhas;
       });
-      return linhas;
-  });
-  baseDeDados.push([hoje, "DOM_TABELAS_P1", JSON.stringify(tabelasP1)]);
+      baseDeDados.push([hoje, "DOM_TABELAS_P1", JSON.stringify(tabelasP1)]);
 
-  // 3. NAVEGAÇÃO PARA A PÁGINA 6
-  console.log('➡️ Navegando até a Página 6...');
-  for(let i = 1; i < 6; i++) {
-      try {
-          // Simula o clique do mouse na seta da direita da barra do Power BI
-          await page.click('.pbi-glyph-chevronright, button.navigation-next', { timeout: 4000 });
-          await page.waitForTimeout(2500); // Aguarda a página virar
-      } catch (e) {
-          console.log(`Aviso: Tentativa ${i} de mudar de página.`);
+      console.log('➡️ Navegando até a Página 6...');
+      for(let i = 1; i < 6; i++) {
+          try {
+              await pbiFrame.click('.pbi-glyph-chevronright, button.navigation-next', { timeout: 4000 });
+              await page.waitForTimeout(2500); 
+          } catch (e) {
+              console.log(`Aviso de clique na página ${i}`);
+          }
       }
+
+      await page.waitForTimeout(8000); 
+
+      console.log('👁️ Lendo tabelas da Página 6...');
+      const tabelasP6 = await pbiFrame.evaluate(() => {
+          let linhas = [];
+          document.querySelectorAll('div[role="row"]').forEach(row => {
+              let dadosLinha = [];
+              row.querySelectorAll('div[role="columnheader"], div[role="gridcell"]').forEach(cell => {
+                  let texto = cell.innerText || cell.getAttribute('title') || '';
+                  if(texto.trim()) dadosLinha.push(texto.trim());
+              });
+              if(dadosLinha.length > 0) linhas.push(dadosLinha.join(' | '));
+          });
+          return linhas;
+      });
+      baseDeDados.push([hoje, "DOM_TABELAS_P6", JSON.stringify(tabelasP6)]);
+  } else {
+      console.log('❌ iFrame não encontrado.');
   }
 
-  await page.waitForTimeout(8000); // Aguarda a Página 6 carregar os dados
-
-  // 4. EXTRAÇÃO VISUAL (Página 6 - Corretores e Dias sem Vender)
-  console.log('👁️ Lendo tabela de Corretores e Dias sem Vender da P6...');
-  const tabelasP6 = await page.evaluate(() => {
-      let linhas = [];
-      document.querySelectorAll('div[role="row"]').forEach(row => {
-          let dadosLinha = [];
-          row.querySelectorAll('div[role="columnheader"], div[role="gridcell"]').forEach(cell => {
-              let texto = cell.innerText || cell.getAttribute('title') || '';
-              if(texto.trim()) dadosLinha.push(texto.trim());
-          });
-          if(dadosLinha.length > 0) linhas.push(dadosLinha.join(' | '));
-      });
-      return linhas;
-  });
-  baseDeDados.push([hoje, "DOM_TABELAS_P6", JSON.stringify(tabelasP6)]);
-
-  console.log('📤 Transmitindo matriz de dados para o cofre no Google Sheets...');
+  console.log('📤 Transmitindo para o Google Sheets...');
   const sendResponse = await fetch(WEBHOOK_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(baseDeDados)
   });
   
-  console.log('🎯 Resposta do Sheets:', await sendResponse.text());
+  console.log('🎯 Resposta:', await sendResponse.text());
   await browser.close();
-  console.log('✅ Missão Nível 2 Concluída!');
 })();
