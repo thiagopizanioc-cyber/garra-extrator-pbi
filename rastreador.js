@@ -1,68 +1,98 @@
 const { chromium } = require('playwright');
 
-// A NOSSA PONTE SECRETA PARA O GOOGLE SHEETS
+// A SUA PONTE SECRETA PARA O GOOGLE SHEETS
 const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_md0VVZ1AMq-GqaA_R1AzoTAKDqDFMobL5ajDwJg-EIAIiBX1xCQ/exec';
 
 (async () => {
-  console.log('🚀 Iniciando Extrator PBI da Equipe Garra...');
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-
-  // Matriz que vai formar as linhas e colunas na planilha
-  let baseDeDados = [
-    ["Data_Captura", "Métricas_Lidas", "Dados_Brutos"] // Cabeçalho da Planilha
-  ];
+  console.log('🚀 Iniciando Robô Nível 2 (Network + Visão Computacional)...');
   
+  // Abre o navegador em resolução Full HD para garantir que as tabelas apareçam inteiras
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+  const page = await context.newPage();
+  
+  let baseDeDados = [["Data_Captura", "Métricas_Lidas", "Dados_Brutos"]];
   const hoje = new Date().toLocaleString('pt-BR');
 
+  // 1. OUVINTE DE REDE (Mantemos isso apenas para pegar os Milhões exatos do VGV)
   page.on('response', async (response) => {
-    const url = response.url();
-    if (url.includes('querydata')) {
+    if (response.url().includes('querydata')) {
       try {
-        const body = await response.text();
-        const json = JSON.parse(body);
-        
-        const results = json.results || [];
-        for (const res of results) {
+        const json = JSON.parse(await response.text());
+        for (const res of (json.results || [])) {
           const descriptor = res.result?.data?.descriptor?.Select || [];
-          
           if (descriptor.length > 0) {
-            // Pega o nome oficial das métricas (Ex: Sum(BD.VLRVENDA))
             const metricNames = descriptor.map(d => d.Name).join(" | ");
-            
-            // Pega a "caixa forte" onde a Microsoft esconde os números
-            const dsr = res.result?.data?.dsr || {};
-            
-            // Guarda na nossa matriz (limitando o texto para não estourar a célula do Google)
-            baseDeDados.push([hoje, metricNames, JSON.stringify(dsr).substring(0, 45000)]);
-            console.log(`✅ Capturado: ${metricNames}`);
+            if(metricNames.includes('Sum(BD.VLRVENDA)') || metricNames.includes('Sum(BD.Entrada Final)') || metricNames.includes('Sum(BD.ENTRADA PAGA)') || metricNames.includes('BD.Última Atualização')) {
+                baseDeDados.push([hoje, metricNames, JSON.stringify(res.result?.data?.dsr || {}).substring(0, 45000)]);
+            }
           }
         }
-      } catch (e) {
-        // Ignora pacotes vazios ou corrompidos
-      }
+      } catch (e) {}
     }
   });
 
-  console.log('🌐 Acessando Diretoria Lisboa (Metrocasa)...');
+  console.log('🌐 Acessando Página 1 (Diretoria Lisboa)...');
   await page.goto('https://construtora-metrocasa.github.io/central/lisboa/Diretoria-Garra-385.html', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(12000); // Aguarda os gráficos renderizarem na tela
 
-  console.log('⏳ Aguardando 15 segundos para a leitura completa...');
-  await page.waitForTimeout(15000);
+  // 2. EXTRAÇÃO VISUAL (Página 1 - Lendo as tabelas na tela)
+  console.log('👁️ Lendo tabela de Vendas (Empreendimento, Estágio, Corretor)...');
+  const tabelasP1 = await page.evaluate(() => {
+      let linhas = [];
+      // Procura todas as linhas visuais na tela
+      document.querySelectorAll('div[role="row"]').forEach(row => {
+          let dadosLinha = [];
+          // Extrai o texto de cada coluna
+          row.querySelectorAll('div[role="columnheader"], div[role="gridcell"]').forEach(cell => {
+              let texto = cell.innerText || cell.getAttribute('title') || '';
+              if(texto.trim()) dadosLinha.push(texto.trim());
+          });
+          // Se achou texto, junta tudo separado por "|"
+          if(dadosLinha.length > 0) linhas.push(dadosLinha.join(' | '));
+      });
+      return linhas;
+  });
+  baseDeDados.push([hoje, "DOM_TABELAS_P1", JSON.stringify(tabelasP1)]);
 
-  console.log('📤 Transmitindo dados para o cofre no Google Sheets...');
-  
-  // Dispara o pacote para a sua URL
+  // 3. NAVEGAÇÃO PARA A PÁGINA 6
+  console.log('➡️ Navegando até a Página 6...');
+  for(let i = 1; i < 6; i++) {
+      try {
+          // Simula o clique do mouse na seta da direita da barra do Power BI
+          await page.click('.pbi-glyph-chevronright, button.navigation-next', { timeout: 4000 });
+          await page.waitForTimeout(2500); // Aguarda a página virar
+      } catch (e) {
+          console.log(`Aviso: Tentativa ${i} de mudar de página.`);
+      }
+  }
+
+  await page.waitForTimeout(8000); // Aguarda a Página 6 carregar os dados
+
+  // 4. EXTRAÇÃO VISUAL (Página 6 - Corretores e Dias sem Vender)
+  console.log('👁️ Lendo tabela de Corretores e Dias sem Vender da P6...');
+  const tabelasP6 = await page.evaluate(() => {
+      let linhas = [];
+      document.querySelectorAll('div[role="row"]').forEach(row => {
+          let dadosLinha = [];
+          row.querySelectorAll('div[role="columnheader"], div[role="gridcell"]').forEach(cell => {
+              let texto = cell.innerText || cell.getAttribute('title') || '';
+              if(texto.trim()) dadosLinha.push(texto.trim());
+          });
+          if(dadosLinha.length > 0) linhas.push(dadosLinha.join(' | '));
+      });
+      return linhas;
+  });
+  baseDeDados.push([hoje, "DOM_TABELAS_P6", JSON.stringify(tabelasP6)]);
+
+  console.log('📤 Transmitindo matriz de dados para o cofre no Google Sheets...');
   const sendResponse = await fetch(WEBHOOK_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(baseDeDados)
   });
   
-  const status = await sendResponse.text();
-  console.log('🎯 Resposta do Sheets:', status);
-
+  console.log('🎯 Resposta do Sheets:', await sendResponse.text());
   await browser.close();
-  console.log('✅ Missão 100% concluída!');
+  console.log('✅ Missão Nível 2 Concluída!');
 })();
