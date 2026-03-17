@@ -1,0 +1,10 @@
+{
+  "name": "garra-pbi-tracker",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node rastreador.js"
+  },
+  "dependencies": {
+    "playwright": "^1.42.0"
+  }
+}
