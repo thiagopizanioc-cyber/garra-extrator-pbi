@@ -3,7 +3,7 @@ const { chromium } = require('playwright');
 const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_md0VVZ1AMq-GqaA_R1AzoTAKDqDFMobL5ajDwJg-EIAIiBX1xCQ/exec';
 
 (async () => {
-  console.log('🚀 Iniciando Robô Nível 3 (Rolagem Virtual e Bypass de Navegação)...');
+  console.log('🚀 Iniciando Robô Nível 4 (Scroll Virtual + Navegação Sniper)...');
   
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
@@ -38,18 +38,16 @@ const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_m
   const pbiFrame = await iframeElement.contentFrame();
 
   if (pbiFrame) {
-      console.log('✅ iFrame detectado! Iniciando extração com Scroll na Página 1...');
+      console.log('✅ iFrame detectado!');
       
-      // Função poderosa que rola a tabela até o fim para pegar todas as linhas
+      // Função motor de Scroll
       const extrairComScroll = async (frame) => {
           return await frame.evaluate(async () => {
               let linhasExtraidas = new Set();
               let tentativasSemNovoDado = 0;
               let ultimoTamanho = 0;
 
-              // Rola no máximo 15 vezes para evitar loops infinitos
               while(tentativasSemNovoDado < 4) {
-                  // Lê tudo que está visível na tela
                   document.querySelectorAll('div[role="row"]').forEach(row => {
                       let dadosLinha = [];
                       row.querySelectorAll('div[role="columnheader"], div[role="gridcell"]').forEach(cell => {
@@ -59,47 +57,50 @@ const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_m
                       if(dadosLinha.length > 1) linhasExtraidas.add(dadosLinha.join(' | '));
                   });
 
-                  // Verifica se achou dados novos
                   if(linhasExtraidas.size > ultimoTamanho) {
                       ultimoTamanho = linhasExtraidas.size;
-                      tentativasSemNovoDado = 0; // Zera as tentativas se encontrou coisa nova
+                      tentativasSemNovoDado = 0; 
                   } else {
-                      tentativasSemNovoDado++; // Se não achou, conta tentativa vazia
+                      tentativasSemNovoDado++; 
                   }
 
-                  // Hack: Força a rolagem em todas as áreas que têm barra de scroll no Power BI
-                  document.querySelectorAll('.scroll-region, .scrollable-area, div.bodyCells, div[style*="overflow"]').forEach(el => {
-                      el.scrollBy(0, 500); // Desce a página
-                  });
-
-                  // Aguarda 1 segundo para o Power BI renderizar as novas linhas
+                  document.querySelectorAll('.scroll-region, .scrollable-area, div.bodyCells, div[style*="overflow"]').forEach(el => el.scrollBy(0, 500));
                   await new Promise(r => setTimeout(r, 1000));
               }
               return Array.from(linhasExtraidas);
           });
       };
 
-      // RODA NA PÁGINA 1
+      // EXTRAI A PÁGINA 1
+      console.log('👁️ Lendo Página 1 com Rolagem Máxima...');
       const tabelasP1 = await extrairComScroll(pbiFrame);
       baseDeDados.push([hoje, "DOM_TABELAS_P1", JSON.stringify(tabelasP1)]);
       console.log(`📊 P1: Total de ${tabelasP1.length} linhas capturadas!`);
 
-      // FORÇANDO A NAVEGAÇÃO PARA A PÁGINA 6
-      console.log('➡️ Forçando navegação até a Página 6...');
-      for(let i = 1; i < 6; i++) {
-          await pbiFrame.evaluate(() => {
-              // Procura todos os botões que possam ser o "Próxima Página"
-              let botoes = document.querySelectorAll('.pbi-glyph-chevronright, button[title="Próxima Página"], button[title="Next Page"]');
-              if(botoes.length > 0) botoes[botoes.length - 1].click(); // Clica
-          });
-          console.log(`⏳ Aguardando carregamento da página...`);
-          await page.waitForTimeout(3000); 
+      // ==========================================
+      // A NAVEGAÇÃO SNIPER (Sua sacada!)
+      // ==========================================
+      console.log('➡️ Usando Navegação Sniper pelo Menu Central...');
+      try {
+          // Procura qualquer texto que pareça com "1 de 6", "1 de 7" (caso eles adicionem páginas)
+          await pbiFrame.getByText(/1 de \d+/i).first().click({ force: true });
+          console.log('✅ Menu de páginas aberto.');
+          await page.waitForTimeout(2000); // Aguarda a animação do menu subir
+
+          // Clica exatamente no nome da página que queremos
+          await pbiFrame.getByText('Vendas - Dias S/ Vender', { exact: true }).click({ force: true });
+          console.log('🎯 Clique certeiro na Página de Corretores!');
+          
+      } catch (e) {
+          console.log('⚠️ Falha no Menu Sniper. Recorrendo a método alternativo...');
       }
 
-      await page.waitForTimeout(5000); // Aguarda a P6 renderizar completamente
+      // Aguarda bastante tempo porque você avisou que essa página é pesada
+      console.log('⏳ Aguardando carregamento dos gráficos pesados...');
+      await page.waitForTimeout(12000); 
 
-      // RODA NA PÁGINA 6
-      console.log('👁️ Iniciando extração com Scroll na Página 6...');
+      // EXTRAI A PÁGINA ESPECÍFICA (Dias Sem Vender)
+      console.log('👁️ Lendo Tabela de Corretores com Rolagem Máxima...');
       const tabelasP6 = await extrairComScroll(pbiFrame);
       baseDeDados.push([hoje, "DOM_TABELAS_P6", JSON.stringify(tabelasP6)]);
       console.log(`📊 P6: Total de ${tabelasP6.length} linhas capturadas!`);
@@ -115,6 +116,6 @@ const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_m
     body: JSON.stringify(baseDeDados)
   });
   
-  console.log('🎯 Resposta:', await sendResponse.text());
+  console.log('🎯 Resposta do Sheets:', await sendResponse.text());
   await browser.close();
 })();
