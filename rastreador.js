@@ -3,7 +3,7 @@ const { chromium } = require('playwright');
 const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_md0VVZ1AMq-GqaA_R1AzoTAKDqDFMobL5ajDwJg-EIAIiBX1xCQ/exec';
 
 (async () => {
-  console.log('🚀 Iniciando Robô Nível 4 (Scroll Virtual + Navegação Sniper)...');
+  console.log('🚀 Iniciando Robô Nível 5 (Envio Linha a Linha e Sniper Force)...');
   
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
@@ -12,7 +12,6 @@ const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_m
   let baseDeDados = [["Data_Captura", "Métricas_Lidas", "Dados_Brutos"]];
   const hoje = new Date().toLocaleString('pt-BR');
 
-  // 1. CAPTURA DOS MILHÕES (Mantido)
   page.on('response', async (response) => {
     if (response.url().includes('querydata')) {
       try {
@@ -38,9 +37,6 @@ const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_m
   const pbiFrame = await iframeElement.contentFrame();
 
   if (pbiFrame) {
-      console.log('✅ iFrame detectado!');
-      
-      // Função motor de Scroll
       const extrairComScroll = async (frame) => {
           return await frame.evaluate(async () => {
               let linhasExtraidas = new Set();
@@ -56,57 +52,50 @@ const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_m
                       });
                       if(dadosLinha.length > 1) linhasExtraidas.add(dadosLinha.join(' | '));
                   });
-
                   if(linhasExtraidas.size > ultimoTamanho) {
                       ultimoTamanho = linhasExtraidas.size;
                       tentativasSemNovoDado = 0; 
-                  } else {
-                      tentativasSemNovoDado++; 
-                  }
+                  } else { tentativasSemNovoDado++; }
 
-                  document.querySelectorAll('.scroll-region, .scrollable-area, div.bodyCells, div[style*="overflow"]').forEach(el => el.scrollBy(0, 500));
+                  document.querySelectorAll('.scroll-region, .scrollable-area, div.bodyCells').forEach(el => el.scrollBy(0, 500));
                   await new Promise(r => setTimeout(r, 1000));
               }
               return Array.from(linhasExtraidas);
           });
       };
 
-      // EXTRAI A PÁGINA 1
-      console.log('👁️ Lendo Página 1 com Rolagem Máxima...');
+      // EXTRAÇÃO P1 (Agora envia separando linha por linha para não quebrar o Sheets)
+      console.log('👁️ Lendo Página 1...');
       const tabelasP1 = await extrairComScroll(pbiFrame);
-      baseDeDados.push([hoje, "DOM_TABELAS_P1", JSON.stringify(tabelasP1)]);
-      console.log(`📊 P1: Total de ${tabelasP1.length} linhas capturadas!`);
+      tabelasP1.forEach(linha => baseDeDados.push([hoje, "P1_VENDA", linha]));
+      console.log(`📊 P1: ${tabelasP1.length} linhas preparadas no cofre!`);
 
-      // ==========================================
-      // A NAVEGAÇÃO SNIPER (Sua sacada!)
-      // ==========================================
+      // NAVEGAÇÃO SNIPER APRIMORADA
       console.log('➡️ Usando Navegação Sniper pelo Menu Central...');
       try {
-          // Procura qualquer texto que pareça com "1 de 6", "1 de 7" (caso eles adicionem páginas)
-          await pbiFrame.getByText(/1 de \d+/i).first().click({ force: true });
-          console.log('✅ Menu de páginas aberto.');
-          await page.waitForTimeout(2000); // Aguarda a animação do menu subir
+          // Busca o botão pela classe oficial de navegação e clica no centro dele
+          await pbiFrame.locator('button.page-navigation-item, span:has-text("de 6")').last().click({ force: true, position: { x: 10, y: 10 } });
+          console.log('✅ Menu de páginas aberto. Procurando o alvo...');
+          await page.waitForTimeout(2500); 
 
-          // Clica exatamente no nome da página que queremos
-          await pbiFrame.getByText('Vendas - Dias S/ Vender', { exact: true }).click({ force: true });
+          // Busca a aba exata contendo o texto e clica
+          await pbiFrame.getByText('Vendas - Dias S/ Vender').last().click({ force: true });
           console.log('🎯 Clique certeiro na Página de Corretores!');
-          
+          await page.waitForTimeout(12000); // Aguarda os gráficos da P6
       } catch (e) {
-          console.log('⚠️ Falha no Menu Sniper. Recorrendo a método alternativo...');
+          console.log('⚠️ Falha no Menu Sniper. Recorrendo à seta manual...');
+          for(let i = 0; i < 5; i++) {
+              await pbiFrame.locator('.pbi-glyph-chevronright').last().click({force: true}).catch(()=>{});
+              await page.waitForTimeout(2500);
+          }
       }
 
-      // Aguarda bastante tempo porque você avisou que essa página é pesada
-      console.log('⏳ Aguardando carregamento dos gráficos pesados...');
-      await page.waitForTimeout(12000); 
-
-      // EXTRAI A PÁGINA ESPECÍFICA (Dias Sem Vender)
-      console.log('👁️ Lendo Tabela de Corretores com Rolagem Máxima...');
+      // EXTRAÇÃO P6 (Linha a Linha)
+      console.log('👁️ Lendo Página 6...');
       const tabelasP6 = await extrairComScroll(pbiFrame);
-      baseDeDados.push([hoje, "DOM_TABELAS_P6", JSON.stringify(tabelasP6)]);
-      console.log(`📊 P6: Total de ${tabelasP6.length} linhas capturadas!`);
+      tabelasP6.forEach(linha => baseDeDados.push([hoje, "P6_CORRETOR", linha]));
+      console.log(`📊 P6: ${tabelasP6.length} linhas preparadas no cofre!`);
 
-  } else {
-      console.log('❌ iFrame não encontrado.');
   }
 
   console.log('📤 Transmitindo para o Google Sheets...');
