@@ -1,0 +1,24 @@
+name: Rastreador Power BI
+on:
+  workflow_dispatch: # Este comando cria um botão "Play" para você apertar quando quiser
+
+jobs:
+  rastrear:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar repositório
+        uses: actions/checkout@v4
+      
+      - name: Configurar Servidor Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Instalar Motor
+        run: npm install
+        
+      - name: Instalar Navegador Fantasma (Playwright)
+        run: npx playwright install chromium --with-deps
+        
+      - name: Executar Missão
+        run: npm start
