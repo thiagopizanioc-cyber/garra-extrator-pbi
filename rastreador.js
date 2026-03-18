@@ -13,94 +13,70 @@ async function encontrarFrame(page) {
   return page.mainFrame();
 }
 
-// ========================================================================
-// MOTOR FÍSICO DE EXTRAÇÃO (USADO NA P1 E NA P6)
-// ========================================================================
+// === MOTOR FÍSICO DE EXTRAÇÃO ===
 async function extrairTabelaFisica(page, frame, nomeTabela) {
   console.log(`\n📋 Iniciando Extração Física: ${nomeTabela}`);
   const linhas = new Set();
   let tentativasSemNovoDado = 0;
 
-  // 1. MIRA E FOCO (Encontra a tabela na tela e clica nela)
   try {
-    // Pega a última célula de dados visível (que sempre pertence à tabela principal)
     const celulaAlvo = frame.locator('div[role="gridcell"], div[role="row"]').last();
-    
-    // Pega as coordenadas X e Y na tela
     const box = await celulaAlvo.boundingBox();
     if (box) {
-      await page.mouse.move(box.x + 10, box.y + 10); // Move o ponteiro do mouse para cima da tabela
-      await page.mouse.click(box.x + 10, box.y + 10); // Clica para ativar o foco do teclado
-      console.log('✅ Tabela focada fisicamente pelo mouse.');
+      await page.mouse.move(box.x + 10, box.y + 10);
+      await page.mouse.click(box.x + 10, box.y + 10);
+      console.log('✅ Tabela focada fisicamente.');
     } else {
       await celulaAlvo.click({ force: true });
     }
   } catch (e) {
-    console.log('⚠️ Aviso: Foco físico falhou, tentando forçar via código...');
+    console.log('⚠️ Aviso: Tentando forçar foco via código...');
   }
 
-  // 2. LOOP DE DESCIDA BRUTA (PageDown e Mouse Wheel)
   for (let volta = 0; volta < 40 && tentativasSemNovoDado < 4; volta++) {
-    
-    // Fotografa a tela atual e extrai os textos
     const linhasNaTela = await frame.evaluate(() => {
       const resultado = [];
       document.querySelectorAll('div[role="row"]').forEach(row => {
         const celulas = [];
         row.querySelectorAll('div[role="gridcell"], div[role="columnheader"]').forEach(c => {
           const texto = (c.getAttribute('title') || c.innerText || '').trim().replace(/\n/g, ' ');
-          // Limpa lixo do Power BI
-          if (texto && texto !== 'Select Row' && !texto.includes('Row Selection')) {
-             celulas.push(texto);
-          }
+          if (texto && texto !== 'Select Row' && !texto.includes('Row Selection')) celulas.push(texto);
         });
         if (celulas.length >= 2) resultado.push(celulas.join(' | '));
       });
       return resultado;
     });
 
-    // Conta se achou algo que ainda não estava no Set
     let novosNestaVolta = 0;
     linhasNaTela.forEach(linha => { 
-      if (!linhas.has(linha)) { 
-        linhas.add(linha); 
-        novosNestaVolta++; 
-      } 
+      if (!linhas.has(linha)) { linhas.add(linha); novosNestaVolta++; } 
     });
     
     if (novosNestaVolta > 0) {
-      tentativasSemNovoDado = 0; // Zera as falhas
-      console.log(`  [Descida ${volta+1}] +${novosNestaVolta} novas | Total capturado: ${linhas.size}`);
+      tentativasSemNovoDado = 0;
+      console.log(`  [Descida ${volta+1}] +${novosNestaVolta} novas | Total: ${linhas.size}`);
     } else {
-      tentativasSemNovoDado++; // Aumenta o alerta de fim de tabela
+      tentativasSemNovoDado++;
     }
 
-    // 3. O GOLPE FÍSICO (Scroll + Teclado)
-    await page.mouse.wheel(0, 1000); // Gira a rodinha do mouse com força
-    await page.keyboard.press('PageDown'); // Aperta PageDown
-    await page.keyboard.press('ArrowDown'); // Dá um toque para baixo para garantir o destravamento
-    
-    // Dá tempo para a Microsoft renderizar os dados ocultos
+    await page.mouse.wheel(0, 1000);
+    await page.keyboard.press('PageDown');
+    await page.keyboard.press('ArrowDown');
     await aguardar(1800); 
   }
-
-  console.log(`🎯 ${nomeTabela} finalizada: ${linhas.size} linhas absolutas extraídas.`);
+  console.log(`🎯 ${nomeTabela}: ${linhas.size} linhas extraídas.`);
   return Array.from(linhas);
 }
 
-// ========================================================================
-// ORQUESTRAÇÃO
-// ========================================================================
+// === ORQUESTRAÇÃO ===
 (async () => {
-  console.log('🚀 Robô PBI v11 (Motor Físico Total) iniciando...');
+  console.log('🚀 Robô PBI v12 (Físico + Nav. Inteligente) iniciando...');
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newContext({ viewport: { width: 1920, height: 1080 } }).then(ctx => ctx.newPage());
-
   const baseDeDados = [['Data_Captura', 'Métricas_Lidas', 'Dados_Brutos']];
   const hoje = new Date().toLocaleString('pt-BR');
 
-  // Intercepta os KPIs financeiros
   page.on('response', async (response) => {
     if (!response.url().includes('querydata')) return;
     try {
@@ -122,35 +98,39 @@ async function extrairTabelaFisica(page, frame, nomeTabela) {
   await aguardar(15000); 
   const frame = await encontrarFrame(page);
 
-  // === AÇÃO 1: EXTRAIR PÁGINA 1 COM MOTOR FÍSICO ===
+  // 1. PÁGINA 1
   const p1 = await extrairTabelaFisica(page, frame, 'P1_VENDA');
   p1.forEach(l => baseDeDados.push([hoje, 'P1_VENDA', l]));
 
-  // === AÇÃO 2: NAVEGAÇÃO BRUTA PARA PÁGINA 6 ===
-  console.log('\n➡️ Atravessando para a Página 6...');
+  // 2. NAVEGAÇÃO COMPROVADA PARA PÁGINA 6
+  console.log('\n➡️ Navegando para P6...');
   try {
-    for (let i = 0; i < 5; i++) {
-      // Força o clique no botão de "Próxima aba" nativo da barra inferior do Power BI
-      await frame.locator('button.navRight, button[title="Próxima Página"], button[title="Next Page"], .pbi-glyph-chevronright').last().click({ force: true, timeout: 4000 });
-      await aguardar(2500);
-      console.log(`  Página virada (${i+1}/5)`);
-    }
-    console.log('✅ Travessia concluída. Aguardando renderização...');
-    await aguardar(12000); 
+    await frame.evaluate(() => {
+      document.querySelectorAll('.sections-container, .sectionsList, nav[role]').forEach(el => el.scrollLeft += 800);
+    });
+    await aguardar(1000);
+    await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]').scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+    await aguardar(500);
+    await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]').click({ force: true, timeout: 6000 });
+    console.log('✅ P6 acessada via aba direta!');
+    await aguardar(15000);
   } catch (e) {
-    console.log('⚠️ Falha ao virar a página.');
+    console.log('⚠️ Aba direta falhou. Usando Next Page 5x...');
+    for (let i = 0; i < 5; i++) {
+      await frame.locator('button[aria-label="Next Page"]').click({ force: true, timeout: 4000 });
+      await aguardar(2500);
+    }
+    await aguardar(12000);
   }
 
-  // === AÇÃO 3: EXTRAIR PÁGINA 6 COM MOTOR FÍSICO ===
+  // 3. PÁGINA 6
   const p6 = await extrairTabelaFisica(page, frame, 'P6_CORRETOR');
   p6.forEach(l => baseDeDados.push([hoje, 'P6_CORRETOR', l]));
 
-  // === AÇÃO 4: TRANSMISSÃO PARA O COFRE ===
-  console.log('\n📤 Enviando pacote blindado para o Google Sheets...');
+  console.log('\n📤 Enviando pacote para o Google Sheets...');
   try {
     const resp = await fetch(WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(baseDeDados),
     });
     console.log('🎯 Servidor Google Respondeu:', await resp.text());
@@ -159,5 +139,4 @@ async function extrairTabelaFisica(page, frame, nomeTabela) {
   }
 
   await browser.close();
-  console.log('\n✅ Missão Nível 11 Concluída!');
 })();
