@@ -13,26 +13,31 @@ async function encontrarFrame(page) {
   return page.mainFrame();
 }
 
-// === MOTOR FÍSICO DE EXTRAÇÃO ===
+// ========================================================================
+// MOTOR FÍSICO COM MIRA A LASER (FOCA EXATAMENTE NA TABELA)
+// ========================================================================
 async function extrairTabelaFisica(page, frame, nomeTabela) {
   console.log(`\n📋 Iniciando Extração Física: ${nomeTabela}`);
   const linhas = new Set();
   let tentativasSemNovoDado = 0;
 
   try {
-    const celulaAlvo = frame.locator('div[role="gridcell"], div[role="row"]').last();
+    // A GRANDE MUDANÇA: Procura exclusivamente células que estejam DENTRO do corpo de uma tabela
+    const celulaAlvo = frame.locator('div.bodyCells div[role="gridcell"]').first();
     const box = await celulaAlvo.boundingBox();
     if (box) {
       await page.mouse.move(box.x + 10, box.y + 10);
       await page.mouse.click(box.x + 10, box.y + 10);
-      console.log('✅ Tabela focada fisicamente.');
+      console.log('✅ Tabela real focada fisicamente pelo mouse.');
     } else {
       await celulaAlvo.click({ force: true });
     }
   } catch (e) {
-    console.log('⚠️ Aviso: Tentando forçar foco via código...');
+    console.log('⚠️ Aviso: Tentando clicar genéricamente na tela...');
+    await page.mouse.click(960, 540); // Clica no centro da tela como último recurso
   }
 
+  // Loop de Descida (PageDown)
   for (let volta = 0; volta < 40 && tentativasSemNovoDado < 4; volta++) {
     const linhasNaTela = await frame.evaluate(() => {
       const resultado = [];
@@ -59,6 +64,7 @@ async function extrairTabelaFisica(page, frame, nomeTabela) {
       tentativasSemNovoDado++;
     }
 
+    // A marretada física
     await page.mouse.wheel(0, 1000);
     await page.keyboard.press('PageDown');
     await page.keyboard.press('ArrowDown');
@@ -68,9 +74,38 @@ async function extrairTabelaFisica(page, frame, nomeTabela) {
   return Array.from(linhas);
 }
 
-// === ORQUESTRAÇÃO ===
+// ========================================================================
+// NAVEGAÇÃO COMPROVADA (CÓDIGO DO AUXILIAR)
+// ========================================================================
+async function navegarP6(frame) {
+  console.log('\n➡️ Navegando para P6...');
+  try {
+    await frame.evaluate(() => {
+      document.querySelectorAll('.sections-container, .sectionsList').forEach(el => el.scrollLeft += 1000);
+    });
+    await aguardar(1000);
+    const aba = frame.locator('button[aria-label="Vendas - Dias S/ Vender"]');
+    await aba.click({ timeout: 4000 });
+    console.log('✅ P6 acessada via aba direta');
+    await aguardar(12000);
+  } catch(e) {
+    console.log('⚠️ Aba direta falhou, ativando Next Page (5 cliques)...');
+    // SELETOR CORRIGIDO QUE FUNCIONA NO SEU PAINEL:
+    for(let i=1; i<=5; i++) {
+      await frame.locator('button[title="Next Page"], button.navRight').click({ force: true });
+      console.log(`  Clique ${i}/5`);
+      await aguardar(2500);
+    }
+    console.log('✅ P6 acessada via Next Page');
+    await aguardar(12000);
+  }
+}
+
+// ========================================================================
+// ORQUESTRAÇÃO PRINCIPAL
+// ========================================================================
 (async () => {
-  console.log('🚀 Robô PBI v12 (Físico + Nav. Inteligente) iniciando...');
+  console.log('🚀 Robô PBI v13 (Navegação Precisa + Motor Físico) iniciando...');
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newContext({ viewport: { width: 1920, height: 1080 } }).then(ctx => ctx.newPage());
@@ -98,36 +133,19 @@ async function extrairTabelaFisica(page, frame, nomeTabela) {
   await aguardar(15000); 
   const frame = await encontrarFrame(page);
 
-  // 1. PÁGINA 1
+  // 1. EXTRAI VENDAS (P1)
   const p1 = await extrairTabelaFisica(page, frame, 'P1_VENDA');
   p1.forEach(l => baseDeDados.push([hoje, 'P1_VENDA', l]));
 
-  // 2. NAVEGAÇÃO COMPROVADA PARA PÁGINA 6
-  console.log('\n➡️ Navegando para P6...');
-  try {
-    await frame.evaluate(() => {
-      document.querySelectorAll('.sections-container, .sectionsList, nav[role]').forEach(el => el.scrollLeft += 800);
-    });
-    await aguardar(1000);
-    await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]').scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
-    await aguardar(500);
-    await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]').click({ force: true, timeout: 6000 });
-    console.log('✅ P6 acessada via aba direta!');
-    await aguardar(15000);
-  } catch (e) {
-    console.log('⚠️ Aba direta falhou. Usando Next Page 5x...');
-    for (let i = 0; i < 5; i++) {
-      await frame.locator('button[aria-label="Next Page"]').click({ force: true, timeout: 4000 });
-      await aguardar(2500);
-    }
-    await aguardar(12000);
-  }
+  // 2. NAVEGA PARA P6
+  await navegarP6(frame);
 
-  // 3. PÁGINA 6
+  // 3. EXTRAI CORRETORES (P6)
   const p6 = await extrairTabelaFisica(page, frame, 'P6_CORRETOR');
   p6.forEach(l => baseDeDados.push([hoje, 'P6_CORRETOR', l]));
 
-  console.log('\n📤 Enviando pacote para o Google Sheets...');
+  // 4. ENVIA PARA A PLANILHA
+  console.log('\n📤 Enviando pacote final para o Google Sheets...');
   try {
     const resp = await fetch(WEBHOOK_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
