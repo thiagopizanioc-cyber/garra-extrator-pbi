@@ -14,7 +14,7 @@ async function encontrarFrame(page) {
 }
 
 // ========================================================================
-// MOTOR FÍSICO COM ESPERA INTELIGENTE
+// MOTOR FÍSICO COM ESPERA INTELIGENTE E MIRA A LASER
 // ========================================================================
 async function extrairTabelaFisica(page, frame, nomeTabela) {
   console.log(`\n📋 Iniciando Extração: ${nomeTabela}`);
@@ -26,6 +26,7 @@ async function extrairTabelaFisica(page, frame, nomeTabela) {
     console.log('⏳ Aguardando a tabela renderizar na tela...');
     await frame.waitForSelector('div[role="gridcell"]', { state: 'visible', timeout: 20000 });
     
+    // Foca na última célula renderizada
     const celulaAlvo = frame.locator('div[role="gridcell"]').last();
     const box = await celulaAlvo.boundingBox();
     if (box) {
@@ -40,7 +41,7 @@ async function extrairTabelaFisica(page, frame, nomeTabela) {
     await page.mouse.click(960, 540); 
   }
 
-  // 2. LOOP DE DESCIDA
+  // 2. LOOP DE DESCIDA BRUTA
   for (let volta = 0; volta < 40 && tentativasSemNovoDado < 4; volta++) {
     const linhasNaTela = await frame.evaluate(() => {
       const resultado = [];
@@ -70,53 +71,48 @@ async function extrairTabelaFisica(page, frame, nomeTabela) {
     await page.mouse.wheel(0, 1000);
     await page.keyboard.press('PageDown');
     await page.keyboard.press('ArrowDown');
-    await aguardar(2000); // Aumentei o tempo de espera para o scroll carregar
+    await aguardar(2000); 
   }
   console.log(`🎯 ${nomeTabela}: ${linhas.size} linhas extraídas.`);
   return Array.from(linhas);
 }
 
 // ========================================================================
-// NAVEGAÇÃO BLINDADA (INJEÇÃO DE JAVASCRIPT)
+// NAVEGAÇÃO COMPROVADA (SELETOR ARIA-LABEL VALIDADO)
 // ========================================================================
 async function navegarP6(frame) {
   console.log('\n➡️ Iniciando travessia para P6...');
   
-  // Tentativa 1: Clique direto na aba
+  // Tentativa 1: Clique direto na aba pelo nome
   try {
     await frame.evaluate(() => {
-      document.querySelectorAll('.sections-container, .sectionsList').forEach(el => el.scrollLeft += 1000);
+      document.querySelectorAll('.sections-container, .sectionsList, nav[role]').forEach(el => el.scrollLeft += 1000);
     });
-    await aguardar(1500);
+    await aguardar(1000);
     await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]').click({ timeout: 5000 });
     console.log('✅ P6 acessada pela aba inferior!');
     await aguardar(12000);
     return;
   } catch(e) {
-    console.log('⚠️ Aba inferior falhou. Ativando injeção de clique (Seta Direita)...');
+    console.log('⚠️ Aba inferior falhou. Tentando Next Page (5 cliques)...');
   }
 
-  // Tentativa 2: Forçando o clique na seta de avançar página via código interno
+  // Tentativa 2: Uso do seletor que funcionou no teste do auxiliar
   for(let i = 1; i <= 5; i++) {
-    await frame.evaluate(() => {
-      // Procura todas as variações conhecidas da seta de próxima página e força o clique
-      const botoes = document.querySelectorAll('button[title="Next Page"], button[title="Próxima Página"], .pbi-glyph-chevronright, button.navigation-next');
-      if (botoes.length > 0) {
-        botoes[botoes.length - 1].click();
-      }
-    });
+    await frame.locator('button[aria-label="Next Page"]').click({ force: true, timeout: 4000 }).catch(()=>{});
     console.log(`  Avanço injetado ${i}/5`);
-    await aguardar(3000);
+    await aguardar(2500);
   }
-  console.log('✅ Travessia finalizada. Aguardando renderização...');
-  await aguardar(12000);
+  
+  console.log('✅ Travessia finalizada. Aguardando renderização da P6...');
+  await aguardar(15000);
 }
 
 // ========================================================================
-// ORQUESTRAÇÃO
+// ORQUESTRAÇÃO PRINCIPAL
 // ========================================================================
 (async () => {
-  console.log('🚀 Robô PBI v14 (Anti-Timeout e Navegação Injetada) iniciando...');
+  console.log('🚀 Robô PBI v15 (Motor Físico + Navegação Blindada) iniciando...');
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newContext({ viewport: { width: 1920, height: 1080 } }).then(ctx => ctx.newPage());
@@ -142,19 +138,18 @@ async function navegarP6(frame) {
   console.log('🌐 Acessando dashboard...');
   await page.goto(URL_PBI, { waitUntil: 'domcontentloaded', timeout: 60000 });
   
-  // Aumentei a paciência inicial do robô
   console.log('⏳ Aguardando estabilização da página (18s)...');
   await aguardar(18000); 
   const frame = await encontrarFrame(page);
 
-  // 1. P1
+  // 1. EXTRAI VENDAS (P1)
   const p1 = await extrairTabelaFisica(page, frame, 'P1_VENDA');
   p1.forEach(l => baseDeDados.push([hoje, 'P1_VENDA', l]));
 
-  // 2. NAVEGAÇÃO
+  // 2. NAVEGA PARA P6
   await navegarP6(frame);
 
-  // 3. P6
+  // 3. EXTRAI CORRETORES (P6)
   const p6 = await extrairTabelaFisica(page, frame, 'P6_CORRETOR');
   p6.forEach(l => baseDeDados.push([hoje, 'P6_CORRETOR', l]));
 
