@@ -1,11 +1,3 @@
-/**
- * rastreador.js — Robô Power BI v9
- * Mudanças vs v8:
- *  1. P1: scroll mais agressivo — aumenta tentativas sem novo dado de 5 para 12
- *     e tenta 3 estratégias diferentes de scroll no mesmo container
- *  2. P6 aba: tenta scrollar a barra de navegação para tornar o botão visível
- *     antes de clicar, resolvendo "Element is not visible"
- */
 const { chromium } = require('playwright');
 
 const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbx90wUuh6OqPQ9OYU_md0VVZ1AMq-GqaA_R1AzoTAKDqDFMobL5ajDwJg-EIAIiBX1xCQ/exec';
@@ -21,168 +13,105 @@ async function encontrarFrame(page) {
   return page.mainFrame();
 }
 
-async function aguardarTabela(frame, minLinhas = 5, maxMs = 25000) {
-  const inicio = Date.now();
-  while (Date.now() - inicio < maxMs) {
-    const n = await frame.evaluate(() =>
-      document.querySelectorAll('.scrollRegion span, div[role="gridcell"]').length
-    );
-    if (n >= minLinhas) return true;
-    await aguardar(1000);
-  }
-  return false;
-}
-
-// ─── EXTRAÇÃO — semNovo aumentado para 12 (antes era 5) ──────────────────────
-async function extrairTabela(frame, nomeTabela) {
-  console.log('\n📋 Extraindo: ' + nomeTabela);
+// ========================================================================
+// MOTOR FÍSICO DE EXTRAÇÃO (USADO NA P1 E NA P6)
+// ========================================================================
+async function extrairTabelaFisica(page, frame, nomeTabela) {
+  console.log(`\n📋 Iniciando Extração Física: ${nomeTabela}`);
   const linhas = new Set();
-  let semNovo = 0;
+  let tentativasSemNovoDado = 0;
 
-  for (let volta = 0; volta < 120 && semNovo < 12; volta++) {
-    const novas = await frame.evaluate(() => {
+  // 1. MIRA E FOCO (Encontra a tabela na tela e clica nela)
+  try {
+    // Pega a última célula de dados visível (que sempre pertence à tabela principal)
+    const celulaAlvo = frame.locator('div[role="gridcell"], div[role="row"]').last();
+    
+    // Pega as coordenadas X e Y na tela
+    const box = await celulaAlvo.boundingBox();
+    if (box) {
+      await page.mouse.move(box.x + 10, box.y + 10); // Move o ponteiro do mouse para cima da tabela
+      await page.mouse.click(box.x + 10, box.y + 10); // Clica para ativar o foco do teclado
+      console.log('✅ Tabela focada fisicamente pelo mouse.');
+    } else {
+      await celulaAlvo.click({ force: true });
+    }
+  } catch (e) {
+    console.log('⚠️ Aviso: Foco físico falhou, tentando forçar via código...');
+  }
+
+  // 2. LOOP DE DESCIDA BRUTA (PageDown e Mouse Wheel)
+  for (let volta = 0; volta < 40 && tentativasSemNovoDado < 4; volta++) {
+    
+    // Fotografa a tela atual e extrai os textos
+    const linhasNaTela = await frame.evaluate(() => {
       const resultado = [];
-      const textos = [];
-
-      document.querySelectorAll(
-        '.scrollRegion span, .scrollRegion div.cell, div[role="gridcell"], div[role="columnheader"]'
-      ).forEach(el => {
-        const t = (el.getAttribute('title') || el.innerText || '').trim().replace(/\n/g, ' ');
-        if (t && t.length > 0 && t !== 'Select Row' && t !== 'Row Selection'
-            && !t.startsWith('Scroll')) textos.push(t);
-      });
-
-      // Blocos de 5: VENDEDOR|GERENTE|SUPERINT|EMPREEND|ESTÁGIO
-      for (let i = 0; i <= textos.length - 5; i++) {
-        const ultimo = (textos[i + 4] || '').toUpperCase();
-        if (ultimo.includes('VENDA') || ultimo.includes('PRÉ') || ultimo.includes('PRE')
-            || ultimo.includes('PROPOSTA') || ultimo.includes('ESTEIRA')) {
-          resultado.push(textos.slice(i, i + 5).join(' | '));
-          i += 4;
-        }
-      }
-
-      // Fallback div[role="row"]
-      if (resultado.length === 0) {
-        document.querySelectorAll('div[role="row"]').forEach(row => {
-          const cells = [];
-          row.querySelectorAll('div[role="gridcell"], div[role="columnheader"]').forEach(c => {
-            const t = (c.getAttribute('title') || c.innerText || '').trim();
-            if (t) cells.push(t);
-          });
-          if (cells.length >= 3) resultado.push(cells.join(' | '));
+      document.querySelectorAll('div[role="row"]').forEach(row => {
+        const celulas = [];
+        row.querySelectorAll('div[role="gridcell"], div[role="columnheader"]').forEach(c => {
+          const texto = (c.getAttribute('title') || c.innerText || '').trim().replace(/\n/g, ' ');
+          // Limpa lixo do Power BI
+          if (texto && texto !== 'Select Row' && !texto.includes('Row Selection')) {
+             celulas.push(texto);
+          }
         });
-      }
-
+        if (celulas.length >= 2) resultado.push(celulas.join(' | '));
+      });
       return resultado;
     });
 
-    let novosNesta = 0;
-    novas.forEach(l => { if (!linhas.has(l)) { linhas.add(l); novosNesta++; } });
-    if (novosNesta > 0) {
-      semNovo = 0;
-      console.log('  +' + novosNesta + ' novas | total: ' + linhas.size);
+    // Conta se achou algo que ainda não estava no Set
+    let novosNestaVolta = 0;
+    linhasNaTela.forEach(linha => { 
+      if (!linhas.has(linha)) { 
+        linhas.add(linha); 
+        novosNestaVolta++; 
+      } 
+    });
+    
+    if (novosNestaVolta > 0) {
+      tentativasSemNovoDado = 0; // Zera as falhas
+      console.log(`  [Descida ${volta+1}] +${novosNestaVolta} novas | Total capturado: ${linhas.size}`);
     } else {
-      semNovo++;
+      tentativasSemNovoDado++; // Aumenta o alerta de fim de tabela
     }
 
-    // 3 estratégias de scroll em cascata no mesmo container
-    await frame.evaluate(() => {
-      const containers = [
-        ...document.querySelectorAll('.scrollRegion'),
-        ...document.querySelectorAll('.scroll-content'),
-        ...document.querySelectorAll('div[class*="scrollWrapper"]'),
-      ];
-      containers.forEach(c => {
-        c.scrollTop += 350;
-        c.scrollBy(0, 350);
-        c.dispatchEvent(new WheelEvent('wheel', { deltaY: 350, bubbles: true }));
-      });
-      // Também scrolla o documento inteiro (fallback)
-      window.scrollBy(0, 350);
-    });
-
-    await aguardar(800);
+    // 3. O GOLPE FÍSICO (Scroll + Teclado)
+    await page.mouse.wheel(0, 1000); // Gira a rodinha do mouse com força
+    await page.keyboard.press('PageDown'); // Aperta PageDown
+    await page.keyboard.press('ArrowDown'); // Dá um toque para baixo para garantir o destravamento
+    
+    // Dá tempo para a Microsoft renderizar os dados ocultos
+    await aguardar(1800); 
   }
 
-  console.log('✅ ' + nomeTabela + ': ' + linhas.size + ' linhas');
+  console.log(`🎯 ${nomeTabela} finalizada: ${linhas.size} linhas absolutas extraídas.`);
   return Array.from(linhas);
 }
 
-// ─── NAVEGA P6 — resolve "Element is not visible" ────────────────────────────
-async function navegarP6(frame) {
-  console.log('\n➡️ Navegando para P6...');
-
-  // FIX: scrollar a barra de abas para expor o botão antes de clicar
-  // O botão existe mas está fora da área visível da barra de navegação
-  try {
-    await frame.evaluate(() => {
-      // Scrolla a barra de abas para a direita para expor a última aba
-      document.querySelectorAll('.sections-container, .sectionsList, nav[role]').forEach(el => {
-        el.scrollLeft += 800;
-      });
-    });
-    await aguardar(1000);
-
-    await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]')
-      .scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
-    await aguardar(500);
-
-    await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]')
-      .click({ force: true, timeout: 6000 });
-    console.log('✅ P6 via aba direta (com scroll)');
-    await aguardar(15000);
-    return true;
-  } catch (e) {
-    console.log('⚠️ Aba direta falhou: ' + e.message.split('\n')[0]);
-  }
-
-  // Fallback: Next Page 5x (funciona conforme log do v8)
-  try {
-    for (let i = 0; i < 5; i++) {
-      await frame.locator('button[aria-label="Next Page"]').click({ force: true, timeout: 4000 });
-      await aguardar(2500);
-      console.log('  Clique ' + (i+1) + '/5');
-    }
-    console.log('✅ P6 via Next Page');
-    await aguardar(12000);
-    return true;
-  } catch (e) {
-    console.log('⚠️ Next Page falhou: ' + e.message.split('\n')[0]);
-  }
-
-  return false;
-}
-
-// ─── PRINCIPAL ────────────────────────────────────────────────────────────────
+// ========================================================================
+// ORQUESTRAÇÃO
+// ========================================================================
 (async () => {
-  console.log('🚀 Robô PBI v9 iniciando...');
+  console.log('🚀 Robô PBI v11 (Motor Físico Total) iniciando...');
 
-  const browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-  });
-
-  const page = await browser.newContext({
-    viewport: { width: 1920, height: 1080 },
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-  }).then(ctx => ctx.newPage());
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newContext({ viewport: { width: 1920, height: 1080 } }).then(ctx => ctx.newPage());
 
   const baseDeDados = [['Data_Captura', 'Métricas_Lidas', 'Dados_Brutos']];
   const hoje = new Date().toLocaleString('pt-BR');
 
+  // Intercepta os KPIs financeiros
   page.on('response', async (response) => {
     if (!response.url().includes('querydata')) return;
     try {
       const json = JSON.parse(await response.text());
       for (const res of (json.results || [])) {
-        const descriptor = res.result?.data?.descriptor?.Select || [];
-        if (!descriptor.length) continue;
-        const names = descriptor.map(d => d.Name).join(' | ');
-        const KPIs = ['Sum(BD.VLRVENDA)', 'Sum(BD.Entrada Final)', 'Sum(BD.ENTRADA PAGA)', 'BD.Última Atualização'];
-        if (KPIs.some(k => names.includes(k))) {
-          baseDeDados.push([hoje, names, JSON.stringify(res.result?.data?.dsr || '').substring(0, 45000)]);
-          console.log('📡 KPI: ' + names.substring(0, 60));
+        const desc = res.result?.data?.descriptor?.Select || [];
+        if (!desc.length) continue;
+        const nomes = desc.map(d => d.Name).join(' | ');
+        const alvos = ['Sum(BD.VLRVENDA)', 'Sum(BD.Entrada Final)', 'Sum(BD.ENTRADA PAGA)', 'BD.Última Atualização'];
+        if (alvos.some(a => nomes.includes(a))) {
+          baseDeDados.push([hoje, nomes, JSON.stringify(res.result?.data?.dsr || '').substring(0, 45000)]);
         }
       }
     } catch (_) {}
@@ -190,38 +119,45 @@ async function navegarP6(frame) {
 
   console.log('🌐 Acessando dashboard...');
   await page.goto(URL_PBI, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-  console.log('⏳ Aguardando PBI renderizar...');
-  try { await page.waitForSelector('iframe', { timeout: 35000 }); } catch (_) {}
-  await aguardar(12000);
-
+  await aguardar(15000); 
   const frame = await encontrarFrame(page);
-  await aguardarTabela(frame);
 
-  // P1
-  console.log('\n=== P1: Relação de Vendas ===');
-  const p1 = await extrairTabela(frame, 'P1_VENDA');
+  // === AÇÃO 1: EXTRAIR PÁGINA 1 COM MOTOR FÍSICO ===
+  const p1 = await extrairTabelaFisica(page, frame, 'P1_VENDA');
   p1.forEach(l => baseDeDados.push([hoje, 'P1_VENDA', l]));
 
-  // P6
-  await navegarP6(frame);
-  await aguardarTabela(frame, 3, 20000);
-  console.log('\n=== P6: Dias Sem Vender ===');
-  const p6 = await extrairTabela(frame, 'P6_CORRETOR');
+  // === AÇÃO 2: NAVEGAÇÃO BRUTA PARA PÁGINA 6 ===
+  console.log('\n➡️ Atravessando para a Página 6...');
+  try {
+    for (let i = 0; i < 5; i++) {
+      // Força o clique no botão de "Próxima aba" nativo da barra inferior do Power BI
+      await frame.locator('button.navRight, button[title="Próxima Página"], button[title="Next Page"], .pbi-glyph-chevronright').last().click({ force: true, timeout: 4000 });
+      await aguardar(2500);
+      console.log(`  Página virada (${i+1}/5)`);
+    }
+    console.log('✅ Travessia concluída. Aguardando renderização...');
+    await aguardar(12000); 
+  } catch (e) {
+    console.log('⚠️ Falha ao virar a página.');
+  }
+
+  // === AÇÃO 3: EXTRAIR PÁGINA 6 COM MOTOR FÍSICO ===
+  const p6 = await extrairTabelaFisica(page, frame, 'P6_CORRETOR');
   p6.forEach(l => baseDeDados.push([hoje, 'P6_CORRETOR', l]));
 
-  console.log('\n📤 Enviando ' + baseDeDados.length + ' linhas...');
+  // === AÇÃO 4: TRANSMISSÃO PARA O COFRE ===
+  console.log('\n📤 Enviando pacote blindado para o Google Sheets...');
   try {
     const resp = await fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(baseDeDados),
     });
-    console.log('🎯 GAS:', await resp.text());
+    console.log('🎯 Servidor Google Respondeu:', await resp.text());
   } catch (e) {
-    console.log('❌ Envio falhou:', e.message);
+    console.log('❌ Falha na transmissão:', e.message);
   }
 
   await browser.close();
-  console.log('\n✅ Concluído. P1: ' + p1.length + ' | P6: ' + p6.length + ' | Total: ' + baseDeDados.length);
+  console.log('\n✅ Missão Nível 11 Concluída!');
 })();
