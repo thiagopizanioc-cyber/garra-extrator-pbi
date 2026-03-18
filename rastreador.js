@@ -1,10 +1,10 @@
 /**
- * rastreador.js — Robô Power BI v8 (DEFINITIVO)
- *
- * Baseado em análise real do DOM:
- *   - Navegação P6: button[aria-label="Vendas - Dias S/ Vender"] (nome exato da aba)
- *   - Scroll tabela: div.scrollRegion (container confirmado)
- *   - Dados: blocos de 5 linhas após "Row Selection"
+ * rastreador.js — Robô Power BI v9
+ * Mudanças vs v8:
+ *  1. P1: scroll mais agressivo — aumenta tentativas sem novo dado de 5 para 12
+ *     e tenta 3 estratégias diferentes de scroll no mesmo container
+ *  2. P6 aba: tenta scrollar a barra de navegação para tornar o botão visível
+ *     antes de clicar, resolvendo "Element is not visible"
  */
 const { chromium } = require('playwright');
 
@@ -18,7 +18,6 @@ async function encontrarFrame(page) {
     if (f) { console.log('✅ Frame PBI:', f.url().substring(0, 60)); return f; }
     await aguardar(1500);
   }
-  console.log('⚠️ Frame não encontrado — usando página principal');
   return page.mainFrame();
 }
 
@@ -34,24 +33,26 @@ async function aguardarTabela(frame, minLinhas = 5, maxMs = 25000) {
   return false;
 }
 
+// ─── EXTRAÇÃO — semNovo aumentado para 12 (antes era 5) ──────────────────────
 async function extrairTabela(frame, nomeTabela) {
   console.log('\n📋 Extraindo: ' + nomeTabela);
   const linhas = new Set();
   let semNovo = 0;
 
-  for (let volta = 0; volta < 60 && semNovo < 5; volta++) {
+  for (let volta = 0; volta < 120 && semNovo < 12; volta++) {
     const novas = await frame.evaluate(() => {
       const resultado = [];
-
-      // Pega todos os textos dentro do scrollRegion
       const textos = [];
-      document.querySelectorAll('.scrollRegion span, .scrollRegion div.cell, div[role="gridcell"], div[role="columnheader"]').forEach(el => {
+
+      document.querySelectorAll(
+        '.scrollRegion span, .scrollRegion div.cell, div[role="gridcell"], div[role="columnheader"]'
+      ).forEach(el => {
         const t = (el.getAttribute('title') || el.innerText || '').trim().replace(/\n/g, ' ');
         if (t && t.length > 0 && t !== 'Select Row' && t !== 'Row Selection'
             && !t.startsWith('Scroll')) textos.push(t);
       });
 
-      // Agrupa em blocos de 5: VENDEDOR|GERENTE|SUPERINT|EMPREEND|ESTÁGIO
+      // Blocos de 5: VENDEDOR|GERENTE|SUPERINT|EMPREEND|ESTÁGIO
       for (let i = 0; i <= textos.length - 5; i++) {
         const ultimo = (textos[i + 4] || '').toUpperCase();
         if (ultimo.includes('VENDA') || ultimo.includes('PRÉ') || ultimo.includes('PRE')
@@ -61,7 +62,7 @@ async function extrairTabela(frame, nomeTabela) {
         }
       }
 
-      // Fallback: div[role="row"] com células
+      // Fallback div[role="row"]
       if (resultado.length === 0) {
         document.querySelectorAll('div[role="row"]').forEach(row => {
           const cells = [];
@@ -78,43 +79,69 @@ async function extrairTabela(frame, nomeTabela) {
 
     let novosNesta = 0;
     novas.forEach(l => { if (!linhas.has(l)) { linhas.add(l); novosNesta++; } });
-    if (novosNesta > 0) { semNovo = 0; console.log('  +' + novosNesta + ' novas | total: ' + linhas.size); }
-    else semNovo++;
+    if (novosNesta > 0) {
+      semNovo = 0;
+      console.log('  +' + novosNesta + ' novas | total: ' + linhas.size);
+    } else {
+      semNovo++;
+    }
 
-    // Scroll dentro do div.scrollRegion (confirmado no diagnóstico)
+    // 3 estratégias de scroll em cascata no mesmo container
     await frame.evaluate(() => {
-      document.querySelectorAll('.scrollRegion, .scroll-content').forEach(c => {
-        c.scrollTop += 400;
-        c.scrollBy(0, 400);
+      const containers = [
+        ...document.querySelectorAll('.scrollRegion'),
+        ...document.querySelectorAll('.scroll-content'),
+        ...document.querySelectorAll('div[class*="scrollWrapper"]'),
+      ];
+      containers.forEach(c => {
+        c.scrollTop += 350;
+        c.scrollBy(0, 350);
+        c.dispatchEvent(new WheelEvent('wheel', { deltaY: 350, bubbles: true }));
       });
+      // Também scrolla o documento inteiro (fallback)
+      window.scrollBy(0, 350);
     });
 
-    await aguardar(900);
+    await aguardar(800);
   }
 
   console.log('✅ ' + nomeTabela + ': ' + linhas.size + ' linhas');
   return Array.from(linhas);
 }
 
+// ─── NAVEGA P6 — resolve "Element is not visible" ────────────────────────────
 async function navegarP6(frame) {
   console.log('\n➡️ Navegando para P6...');
 
-  // Método 1: clica diretamente na aba pelo aria-label EXATO (confirmado no diagnóstico)
+  // FIX: scrollar a barra de abas para expor o botão antes de clicar
+  // O botão existe mas está fora da área visível da barra de navegação
   try {
+    await frame.evaluate(() => {
+      // Scrolla a barra de abas para a direita para expor a última aba
+      document.querySelectorAll('.sections-container, .sectionsList, nav[role]').forEach(el => {
+        el.scrollLeft += 800;
+      });
+    });
+    await aguardar(1000);
+
     await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]')
-      .click({ force: true, timeout: 8000 });
-    console.log('✅ P6 via aba direta');
+      .scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+    await aguardar(500);
+
+    await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]')
+      .click({ force: true, timeout: 6000 });
+    console.log('✅ P6 via aba direta (com scroll)');
     await aguardar(15000);
     return true;
   } catch (e) {
     console.log('⚠️ Aba direta falhou: ' + e.message.split('\n')[0]);
   }
 
-  // Método 2: botão "Next Page" (aria-label confirmado no diagnóstico)
+  // Fallback: Next Page 5x (funciona conforme log do v8)
   try {
     for (let i = 0; i < 5; i++) {
       await frame.locator('button[aria-label="Next Page"]').click({ force: true, timeout: 4000 });
-      await aguardar(3000);
+      await aguardar(2500);
       console.log('  Clique ' + (i+1) + '/5');
     }
     console.log('✅ P6 via Next Page');
@@ -127,8 +154,9 @@ async function navegarP6(frame) {
   return false;
 }
 
+// ─── PRINCIPAL ────────────────────────────────────────────────────────────────
 (async () => {
-  console.log('🚀 Robô PBI v8 iniciando...');
+  console.log('🚀 Robô PBI v9 iniciando...');
 
   const browser = await chromium.launch({
     headless: true,
@@ -143,7 +171,6 @@ async function navegarP6(frame) {
   const baseDeDados = [['Data_Captura', 'Métricas_Lidas', 'Dados_Brutos']];
   const hoje = new Date().toLocaleString('pt-BR');
 
-  // Intercepta KPIs via API interna do Power BI
   page.on('response', async (response) => {
     if (!response.url().includes('querydata')) return;
     try {
@@ -183,7 +210,6 @@ async function navegarP6(frame) {
   const p6 = await extrairTabela(frame, 'P6_CORRETOR');
   p6.forEach(l => baseDeDados.push([hoje, 'P6_CORRETOR', l]));
 
-  // Envio
   console.log('\n📤 Enviando ' + baseDeDados.length + ' linhas...');
   try {
     const resp = await fetch(WEBHOOK_URL, {
