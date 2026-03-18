@@ -1,8 +1,10 @@
 {
   "name": "garra-pbi-tracker",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "Robô que coleta dados do Power BI e envia para Google Sheets",
   "scripts": {
-    "start": "node rastreador.js"
+    "start": "node rastreador.js",
+    "install-browser": "playwright install chromium --with-deps"
   },
   "dependencies": {
     "playwright": "^1.42.0"
