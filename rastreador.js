@@ -1,9 +1,8 @@
 /**
- * rastreador.js — Robô PBI v20
- * Fix P6:
- *  1. Total esperado: procura especificamente o rodapé da tabela (número isolado pequeno)
- *  2. Scroll: move o mouse sobre a tabela antes de clicar scrollDown
- *     (o botão some quando mouse sai da área)
+ * rastreador.js — Robô PBI v21
+ *
+ * P1: volta ao motor do v18 (sem bug de dupla chamada)
+ * P6: mecanismo do v18 que extraiu 60 linhas + hover antes de clicar
  */
 const { chromium } = require('playwright');
 
@@ -25,13 +24,29 @@ async function focarTabela(page, frame) {
     await frame.waitForSelector('div[role="gridcell"]', { state: 'visible', timeout: 20000 });
     const celula = frame.locator('div[role="gridcell"]').last();
     const box = await celula.boundingBox();
-    if (box) { await page.mouse.move(box.x + 10, box.y + 10); await page.mouse.click(box.x + 10, box.y + 10); }
-    else { await celula.click({ force: true }); }
+    if (box) {
+      await page.mouse.move(box.x + 10, box.y + 10);
+      await page.mouse.click(box.x + 10, box.y + 10);
+    } else {
+      await celula.click({ force: true });
+    }
     console.log('✅ Tabela focada.');
-  } catch (e) { console.log('⚠️ Foco de emergência.'); await page.mouse.click(960, 540); }
+  } catch (e) {
+    console.log('⚠️ Foco de emergência.');
+    await page.mouse.click(960, 540);
+  }
 }
 
-const AVALIAR_DOM = () => {
+// Coleta linhas do DOM — uma única chamada por iteração
+function coletarNovas(linhas, batch) {
+  let novos = 0;
+  for (const l of batch) {
+    if (!linhas.has(l)) { linhas.add(l); novos++; }
+  }
+  return novos;
+}
+
+const LER_DOM = () => {
   const resultado = [];
   document.querySelectorAll('div[role="row"]').forEach(row => {
     const celulas = [];
@@ -45,53 +60,16 @@ const AVALIAR_DOM = () => {
   return resultado;
 };
 
-// ─── P1: motor físico ─────────────────────────────────────────────────────────
+// ─── P1: motor físico — mouse.wheel + teclado ─────────────────────────────────
 async function extrairP1(page, frame) {
   console.log('\n📋 Extraindo: P1_VENDA');
   await focarTabela(page, frame);
+
   const linhas = new Set();
   let semNovo = 0;
+
   for (let v = 0; v < 80 && semNovo < 6; v++) {
-    const novos = (await frame.evaluate(AVALIAR_DOM)).filter(l => !linhas.has(l) && linhas.add(l)).length;
-    // conta novos de forma simples
-    let n = 0;
-    (await frame.evaluate(AVALIAR_DOM)).forEach(l => { if (!linhas.has(l)) { linhas.add(l); n++; } });
-    // recalcula com set já atualizado — vamos simplificar:
-    if (n > 0) { semNovo = 0; console.log('  [' + (v+1) + '] total: ' + linhas.size); }
-    else semNovo++;
-    await page.mouse.wheel(0, 1000);
-    await page.keyboard.press('PageDown');
-    await page.keyboard.press('ArrowDown');
-    await aguardar(2000);
-  }
-  console.log('🎯 P1_VENDA: ' + linhas.size + ' linhas.'); return Array.from(linhas);
-}
-
-// ─── P6: mouse hover + scrollDown ────────────────────────────────────────────
-async function extrairP6(page, frame) {
-  console.log('\n📋 Extraindo: P6_CORRETOR');
-
-  // Encontra a posição da tabela para manter o mouse sobre ela
-  const tabelaBox = await frame.evaluate(() => {
-    // Procura o container da tabela "Relação de corretores"
-    const els = document.querySelectorAll('div[aria-label*="Rela"], div[aria-label*="corre"], div[class*="tableEx"]');
-    for (const el of els) {
-      const r = el.getBoundingClientRect();
-      if (r.width > 200 && r.height > 100) return { x: r.x + r.width/2, y: r.y + r.height/2 };
-    }
-    // Fallback: centro-baixo da tela onde a tabela fica na P6
-    return { x: 640, y: 550 };
-  });
-  console.log('  🖱️ Posição da tabela:', JSON.stringify(tabelaBox));
-
-  const linhas = new Set();
-  let semNovo = 0;
-
-  for (let v = 0; v < 150 && semNovo < 12; v++) {
-    // Coleta linhas atuais
-    const batch = await frame.evaluate(AVALIAR_DOM);
-    let novos = 0;
-    batch.forEach(l => { if (!linhas.has(l)) { linhas.add(l); novos++; } });
+    const novos = coletarNovas(linhas, await frame.evaluate(LER_DOM));
 
     if (novos > 0) {
       semNovo = 0;
@@ -100,60 +78,97 @@ async function extrairP6(page, frame) {
       semNovo++;
     }
 
-    // Move o mouse para DENTRO da tabela — isso faz o botão scrollDown aparecer
-    await page.mouse.move(tabelaBox.x, tabelaBox.y);
-    await aguardar(300);
+    await page.mouse.wheel(0, 1000);
+    await page.keyboard.press('PageDown');
+    await page.keyboard.press('ArrowDown');
+    await aguardar(2000);
+  }
 
-    // Clica no scrollDown — que agora deve estar visível
-    const resultado = await frame.evaluate(() => {
-      // Tenta várias estratégias para encontrar o botão
-      const seletores = [
-        'button.scrollDown',
-        '.scrollDown',
-        'button[aria-label="Scroll down"]',
-        'button[aria-label="scroll down"]',
-        '[class*="scrollDown"]',
-      ];
-      for (const sel of seletores) {
-        const btn = document.querySelector(sel);
-        if (btn) {
-          for (let i = 0; i < 8; i++) btn.click();
-          return 'clicou: ' + sel;
-        }
+  console.log('🎯 P1_VENDA: ' + linhas.size + ' linhas.');
+  return Array.from(linhas);
+}
+
+// ─── P6: hover + scrollDown ───────────────────────────────────────────────────
+async function extrairP6(page, frame) {
+  console.log('\n📋 Extraindo: P6_CORRETOR');
+
+  // Encontra posição central da tabela para manter hover
+  const pos = await frame.evaluate(() => {
+    const rows = document.querySelectorAll('div[role="row"]');
+    if (rows.length > 0) {
+      const r = rows[Math.floor(rows.length / 2)].getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }
+    return { x: 640, y: 500 };
+  });
+
+  const linhas = new Set();
+  let semNovo = 0;
+
+  for (let v = 0; v < 150 && semNovo < 12; v++) {
+    const novos = coletarNovas(linhas, await frame.evaluate(LER_DOM));
+
+    if (novos > 0) {
+      semNovo = 0;
+      console.log('  [' + (v+1) + '] +' + novos + ' | total: ' + linhas.size);
+    } else {
+      semNovo++;
+    }
+
+    // Mantém mouse sobre a tabela para que scrollDown fique visível
+    await page.mouse.move(pos.x, pos.y);
+    await aguardar(200);
+
+    // Clica no scrollDown 8x
+    await frame.evaluate(() => {
+      const sels = ['button.scrollDown', '.scrollDown', 'button[aria-label="Scroll down"]'];
+      for (const s of sels) {
+        const btn = document.querySelector(s);
+        if (btn) { for (let i = 0; i < 8; i++) btn.click(); return; }
       }
-      return 'não encontrou';
     });
-
-    if (v === 0 || v % 10 === 0) console.log('  scroll: ' + resultado);
 
     await aguardar(2500);
   }
 
-  console.log('🎯 P6_CORRETOR: ' + linhas.size + ' linhas.'); return Array.from(linhas);
+  console.log('🎯 P6_CORRETOR: ' + linhas.size + ' linhas.');
+  return Array.from(linhas);
 }
 
 // ─── NAVEGA P6 ────────────────────────────────────────────────────────────────
 async function navegarP6(frame) {
   console.log('\n➡️ Navegando para P6...');
-  try {
-    const clicou = await frame.evaluate(() => {
-      for (const btn of document.querySelectorAll('button[aria-label]')) {
-        if (btn.getAttribute('aria-label') === 'Vendas - Dias S/ Vender') { btn.click(); return true; }
+
+  // JS click direto — ignora visibilidade (funcionou no v18/v19/v20)
+  const clicou = await frame.evaluate(() => {
+    for (const btn of document.querySelectorAll('button[aria-label]')) {
+      if (btn.getAttribute('aria-label') === 'Vendas - Dias S/ Vender') {
+        btn.click(); return true;
       }
-      return false;
-    });
-    if (clicou) { console.log('✅ P6 via JS click.'); await aguardar(15000); return; }
-  } catch (_) {}
+    }
+    return false;
+  }).catch(() => false);
+
+  if (clicou) {
+    console.log('✅ P6 via JS click.');
+    await aguardar(15000);
+    return;
+  }
+
+  // Fallback: Next Page 5x
+  console.log('⚠️ JS click não encontrou botão. Usando Next Page...');
   for (let i = 1; i <= 5; i++) {
     await frame.locator('button[aria-label="Next Page"]').click({ force: true, timeout: 4000 }).catch(() => {});
-    console.log('  Clique ' + i + '/5'); await aguardar(2500);
+    console.log('  Clique ' + i + '/5');
+    await aguardar(2500);
   }
-  console.log('✅ Navegação via Next Page.'); await aguardar(15000);
+  console.log('✅ Navegação via Next Page.');
+  await aguardar(15000);
 }
 
 // ─── PRINCIPAL ────────────────────────────────────────────────────────────────
 (async () => {
-  console.log('🚀 Robô PBI v20 iniciando...');
+  console.log('🚀 Robô PBI v21 iniciando...');
 
   const browser = await chromium.launch({
     headless: true,
@@ -175,8 +190,10 @@ async function navegarP6(frame) {
         const desc = res.result?.data?.descriptor?.Select || [];
         if (!desc.length) continue;
         const nomes = desc.map(d => d.Name).join(' | ');
-        if (['Sum(BD.VLRVENDA)', 'Sum(BD.Entrada Final)', 'Sum(BD.ENTRADA PAGA)', 'BD.Última Atualização'].some(a => nomes.includes(a)))
+        if (['Sum(BD.VLRVENDA)', 'Sum(BD.Entrada Final)', 'Sum(BD.ENTRADA PAGA)', 'BD.Última Atualização']
+            .some(a => nomes.includes(a))) {
           baseDeDados.push([hoje, nomes, JSON.stringify(res.result?.data?.dsr || '').substring(0, 45000)]);
+        }
       }
     } catch (_) {}
   });
@@ -202,7 +219,11 @@ async function navegarP6(frame) {
 
   console.log('\n📤 Enviando ' + baseDeDados.length + ' linhas...');
   try {
-    const resp = await fetch(WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(baseDeDados) });
+    const resp = await fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(baseDeDados),
+    });
     console.log('🎯 GAS:', await resp.text());
   } catch (e) { console.log('❌ Envio falhou:', e.message); }
 
