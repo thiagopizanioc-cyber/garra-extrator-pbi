@@ -1,7 +1,8 @@
 /**
- * rastreador.js — Robô PBI v17
- * Fix: filtra "Additional Conditional Formatting" que o Power BI injeta
- *      como primeira célula em linhas com formatação condicional.
+ * rastreador.js — Robô PBI v18
+ * Fix P6:
+ *  1. Navegação: click via JS evaluate (ignora visibilidade)
+ *  2. Scroll: clica em button.scrollDown repetidamente (confirmado no diagnóstico)
  */
 const { chromium } = require('playwright');
 
@@ -26,18 +27,19 @@ async function focarTabela(page, frame) {
     if (box) {
       await page.mouse.move(box.x + 10, box.y + 10);
       await page.mouse.click(box.x + 10, box.y + 10);
-      console.log('✅ Tabela focada.');
     } else {
       await celula.click({ force: true });
     }
+    console.log('✅ Tabela focada.');
   } catch (e) {
-    console.log('⚠️ Clique de emergência no centro da tela.');
+    console.log('⚠️ Foco de emergência.');
     await page.mouse.click(960, 540);
   }
 }
 
-async function extrairTabela(page, frame, nomeTabela, maxSemNovo = 6) {
-  console.log(`\n📋 Extraindo: ${nomeTabela}`);
+// ─── EXTRAÇÃO P1: motor físico (mouse.wheel + keyboard) ──────────────────────
+async function extrairTabelaFisica(page, frame, nomeTabela, maxSemNovo) {
+  console.log('\n📋 Extraindo: ' + nomeTabela);
   await focarTabela(page, frame);
 
   const linhas = new Set();
@@ -52,16 +54,7 @@ async function extrairTabela(page, frame, nomeTabela, maxSemNovo = 6) {
           const t = (c.getAttribute('title') || c.innerText || '').trim().replace(/\n/g, ' ');
           if (t && t !== 'Select Row' && !t.includes('Row Selection')) celulas.push(t);
         });
-
-        if (celulas.length < 2) return;
-
-        // ── FIX PRINCIPAL ──
-        // O Power BI injeta "N Additional Conditional Formatting" como primeira célula
-        // em linhas com formatação condicional. Detectamos e removemos esse prefixo.
-        if (/Additional Conditional Formatting/i.test(celulas[0])) {
-          celulas.shift(); // remove a primeira célula espúria
-        }
-
+        if (celulas.length > 0 && /Additional Conditional/i.test(celulas[0])) celulas.shift();
         if (celulas.length >= 2) resultado.push(celulas.join(' | '));
       });
       return resultado;
@@ -69,13 +62,8 @@ async function extrairTabela(page, frame, nomeTabela, maxSemNovo = 6) {
 
     let novosNesta = 0;
     novas.forEach(l => { if (!linhas.has(l)) { linhas.add(l); novosNesta++; } });
-
-    if (novosNesta > 0) {
-      semNovo = 0;
-      console.log(`  [${volta+1}] +${novosNesta} novas | total: ${linhas.size}`);
-    } else {
-      semNovo++;
-    }
+    if (novosNesta > 0) { semNovo = 0; console.log('  [' + (volta+1) + '] +' + novosNesta + ' | total: ' + linhas.size); }
+    else semNovo++;
 
     await page.mouse.wheel(0, 1000);
     await page.keyboard.press('PageDown');
@@ -83,44 +71,99 @@ async function extrairTabela(page, frame, nomeTabela, maxSemNovo = 6) {
     await aguardar(2000);
   }
 
-  console.log(`🎯 ${nomeTabela}: ${linhas.size} linhas.`);
+  console.log('🎯 ' + nomeTabela + ': ' + linhas.size + ' linhas.');
   return Array.from(linhas);
 }
 
-async function navegarP6(page, frame) {
-  console.log('\n➡️ Navegando para P6...');
+// ─── EXTRAÇÃO P6: clica em button.scrollDown (confirmado no diagnóstico) ──────
+async function extrairTabelaBotoes(frame, nomeTabela, maxSemNovo) {
+  console.log('\n📋 Extraindo: ' + nomeTabela + ' (modo botões de scroll)');
 
-  try {
-    await frame.evaluate(() => {
-      document.querySelectorAll('.sections-container, .sectionsList, nav[role]').forEach(el => {
-        el.scrollLeft += 1000;
+  const linhas = new Set();
+  let semNovo = 0;
+
+  for (let volta = 0; volta < 100 && semNovo < maxSemNovo; volta++) {
+    const novas = await frame.evaluate(() => {
+      const resultado = [];
+      document.querySelectorAll('div[role="row"]').forEach(row => {
+        const celulas = [];
+        row.querySelectorAll('div[role="gridcell"], div[role="columnheader"]').forEach(c => {
+          const t = (c.getAttribute('title') || c.innerText || '').trim().replace(/\n/g, ' ');
+          if (t && t !== 'Select Row' && !t.includes('Row Selection')) celulas.push(t);
+        });
+        if (celulas.length > 0 && /Additional Conditional/i.test(celulas[0])) celulas.shift();
+        if (celulas.length >= 2) resultado.push(celulas.join(' | '));
       });
+      return resultado;
     });
-    await aguardar(1000);
-    await frame.locator('button[aria-label="Vendas - Dias S/ Vender"]').click({ timeout: 6000 });
-    console.log('✅ P6 via aba direta.');
-    await aguardar(15000);
-    return;
-  } catch (e) {
-    console.log('⚠️ Aba direta falhou. Usando Next Page...');
+
+    let novosNesta = 0;
+    novas.forEach(l => { if (!linhas.has(l)) { linhas.add(l); novosNesta++; } });
+    if (novosNesta > 0) { semNovo = 0; console.log('  [' + (volta+1) + '] +' + novosNesta + ' | total: ' + linhas.size); }
+    else semNovo++;
+
+    // Clica 5x no botão scrollDown — método confirmado pelo diagnóstico
+    const clicou = await frame.evaluate(() => {
+      const btn = document.querySelector('button.scrollDown:not(.visually-hidden), .scrollDown');
+      if (btn) { btn.click(); btn.click(); btn.click(); btn.click(); btn.click(); return true; }
+      // Fallback: busca por aria-label
+      const btnAlt = document.querySelector('button[aria-label*="Scroll down"], button[aria-label*="scroll down"]');
+      if (btnAlt) { btnAlt.click(); btnAlt.click(); btnAlt.click(); return true; }
+      return false;
+    });
+
+    if (!clicou && semNovo > 2) {
+      console.log('  ⚠️ Botão scrollDown não encontrado.');
+      break;
+    }
+
+    await aguardar(1500);
   }
 
-  for (let i = 1; i <= 5; i++) {
-    await frame.locator('button[aria-label="Next Page"]').click({ force: true, timeout: 4000 }).catch(() => {});
-    console.log(`  Clique ${i}/5`);
-    await aguardar(2500);
-  }
-  console.log('✅ Navegação concluída. Aguardando P6...');
-  await aguardar(15000);
-
-  // Foca na tabela da P6 (fix do problema de scroll preso na barra de navegação)
-  await page.mouse.move(960, 500);
-  await page.mouse.click(960, 500);
-  await aguardar(1000);
+  console.log('🎯 ' + nomeTabela + ': ' + linhas.size + ' linhas.');
+  return Array.from(linhas);
 }
 
+// ─── NAVEGA P6 ────────────────────────────────────────────────────────────────
+async function navegarP6(frame) {
+  console.log('\n➡️ Navegando para P6...');
+
+  // Estratégia 1: clique via JS (ignora visibilidade — resolve o timeout)
+  try {
+    const clicou = await frame.evaluate(() => {
+      const btns = document.querySelectorAll('button[aria-label]');
+      for (const btn of btns) {
+        if (btn.getAttribute('aria-label') === 'Vendas - Dias S/ Vender') {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+    if (clicou) {
+      console.log('✅ P6 via JS click (ignorou visibilidade).');
+      await aguardar(15000);
+      return;
+    }
+    console.log('⚠️ Botão P6 não encontrado no DOM.');
+  } catch (e) {
+    console.log('⚠️ JS click falhou:', e.message.split('\n')[0]);
+  }
+
+  // Estratégia 2: Next Page 5x
+  console.log('   Tentando Next Page 5x...');
+  for (let i = 1; i <= 5; i++) {
+    await frame.locator('button[aria-label="Next Page"]').click({ force: true, timeout: 4000 }).catch(() => {});
+    console.log('  Clique ' + i + '/5');
+    await aguardar(2500);
+  }
+  console.log('✅ Navegação via Next Page concluída.');
+  await aguardar(15000);
+}
+
+// ─── PRINCIPAL ────────────────────────────────────────────────────────────────
 (async () => {
-  console.log('🚀 Robô PBI v17 iniciando...');
+  console.log('🚀 Robô PBI v18 iniciando...');
 
   const browser = await chromium.launch({
     headless: true,
@@ -153,23 +196,31 @@ async function navegarP6(page, frame) {
 
   console.log('🌐 Acessando dashboard...');
   await page.goto(URL_PBI, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
   console.log('⏳ Aguardando estabilização (18s)...');
   await aguardar(18000);
 
   const frame = await encontrarFrame(page);
 
+  // P1 — motor físico (funciona bem, 179 linhas)
   console.log('\n=== P1: Relação de Vendas ===');
-  const p1 = await extrairTabela(page, frame, 'P1_VENDA');
+  const p1 = await extrairTabelaFisica(page, frame, 'P1_VENDA', 6);
   p1.forEach(l => baseDeDados.push([hoje, 'P1_VENDA', l]));
 
-  await navegarP6(page, frame);
+  // Navega P6
+  await navegarP6(frame);
 
+  // Espera tabela da P6 carregar
+  try {
+    await frame.waitForSelector('div[role="gridcell"]', { state: 'visible', timeout: 20000 });
+  } catch (_) {}
+  await aguardar(3000);
+
+  // P6 — motor de botões (confirmado pelo diagnóstico)
   console.log('\n=== P6: Dias Sem Vender ===');
-  const p6 = await extrairTabela(page, frame, 'P6_CORRETOR', 8);
+  const p6 = await extrairTabelaBotoes(frame, 'P6_CORRETOR', 8);
   p6.forEach(l => baseDeDados.push([hoje, 'P6_CORRETOR', l]));
 
-  console.log(`\n📤 Enviando ${baseDeDados.length} linhas...`);
+  console.log('\n📤 Enviando ' + baseDeDados.length + ' linhas...');
   try {
     const resp = await fetch(WEBHOOK_URL, {
       method: 'POST',
@@ -182,5 +233,6 @@ async function navegarP6(page, frame) {
   }
 
   await browser.close();
-  console.log(`\n✅ Concluído. P1: ${p1.length} | P6: ${p6.length} | Total: ${baseDeDados.length}`);
+  console.log('\n✅ Concluído. P1: ' + p1.length + ' | P6: ' + p6.length + ' | Total: ' + baseDeDados.length);
+  console.log('   Meta: P1 ~179 | P6 ~172');
 })();
