@@ -1,9 +1,7 @@
 /**
- * rastreador.js — Robô PBI v23
- *
- * Fix P6: scrollTop direto no div.mid-viewport (confirmado no diagnóstico).
- * Sem mouse, sem wheel, sem navFlyout no caminho.
- * mid-viewport: scrollHeight=2549, clientHeight=242, step=200px
+ * rastreador.js — Robô PBI v24
+ * P1: detecção dinâmica da posição (v22 — extraía 205 linhas)
+ * P6: scrollTop direto no mid-viewport (v23 — extraiu 172 linhas ✅)
  */
 const { chromium } = require('playwright');
 
@@ -34,19 +32,31 @@ const LER_DOM = () => {
   return resultado;
 };
 
-// ─── P1: wheel com mouse no lado esquerdo da tabela (longe do navFlyout) ──────
+// ─── P1: wheel com posição dinâmica (v22 que extraiu 205 linhas) ──────────────
 async function extrairP1(page, frame) {
   console.log('\n📋 Extraindo: P1_VENDA');
 
   // Foca na tabela
   try {
     await frame.waitForSelector('div[role="gridcell"]', { state: 'visible', timeout: 20000 });
-    const box = await frame.locator('div[role="gridcell"]').last().boundingBox();
+    const celula = frame.locator('div[role="gridcell"]').last();
+    const box = await celula.boundingBox();
     if (box) { await page.mouse.move(box.x + 10, box.y + 10); await page.mouse.click(box.x + 10, box.y + 10); }
+    else { await celula.click({ force: true }); }
   } catch (_) { await page.mouse.click(960, 540); }
   console.log('✅ Tabela focada.');
 
-  // P1 fica no lado direito — usa wheel em x=1100 (longe do navFlyout que fica em x=835)
+  // Detecta posição real da tabela
+  const pos = await frame.evaluate(() => {
+    const cells = document.querySelectorAll('div[role="gridcell"]');
+    if (cells.length > 5) {
+      const r = cells[Math.floor(cells.length / 2)].getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    }
+    return { x: 1100, y: 500 };
+  });
+  console.log('  📍 Posição tabela P1: x=' + pos.x + ', y=' + pos.y);
+
   const linhas = new Set();
   let semNovo = 0;
 
@@ -57,7 +67,7 @@ async function extrairP1(page, frame) {
     if (novos > 0) { semNovo = 0; console.log('  [' + (v+1) + '] +' + novos + ' | total: ' + linhas.size); }
     else semNovo++;
 
-    await page.mouse.move(1100, 500);
+    await page.mouse.move(pos.x, pos.y);
     await page.mouse.wheel(0, 800);
     await aguardar(2000);
   }
@@ -66,30 +76,24 @@ async function extrairP1(page, frame) {
   return Array.from(linhas);
 }
 
-// ─── P6: scrollTop direto no div.mid-viewport ─────────────────────────────────
-// Diagnostico confirmou: mid-viewport scrollHeight=2549, clientHeight=242
-// Sem mouse no caminho = sem navFlyout interceptando
+// ─── P6: scrollTop direto no mid-viewport (v23 que extraiu 172 linhas ✅) ─────
 async function extrairP6(frame) {
   console.log('\n📋 Extraindo: P6_CORRETOR (scrollTop direto)');
 
-  // Fecha o navFlyout se estiver aberto (clica fora dele)
-  await frame.evaluate(() => {
-    document.body.click();
-    document.querySelector('.navFlyout, section.navFlyout')?.blur?.();
-  });
+  // Fecha navFlyout se estiver aberto
+  await frame.evaluate(() => { document.body.click(); });
   await aguardar(500);
 
   const linhas = new Set();
   let semNovo = 0;
   let scrollAtual = 0;
-  const STEP = 200; // passo pequeno para não pular linhas
+  const STEP = 200;
 
-  // Obtém o scrollHeight real do container
   const maxScroll = await frame.evaluate(() => {
     const el = document.querySelector('div.mid-viewport');
     return el ? el.scrollHeight - el.clientHeight : 2400;
   });
-  console.log('  📐 Scroll máximo do mid-viewport: ' + maxScroll + 'px');
+  console.log('  📐 Scroll máximo: ' + maxScroll + 'px');
 
   for (let v = 0; v < 200 && semNovo < 12; v++) {
     const batch = await frame.evaluate(LER_DOM);
@@ -103,20 +107,18 @@ async function extrairP6(frame) {
       semNovo++;
     }
 
-    // Para se já passamos do scroll máximo
     if (scrollAtual >= maxScroll) {
-      console.log('  ✅ Fim do scroll atingido (' + scrollAtual + '/' + maxScroll + 'px)');
+      console.log('  ✅ Fim do scroll atingido.');
       break;
     }
 
-    // Incrementa scrollTop diretamente — sem mouse, sem eventos que disparam navFlyout
     scrollAtual += STEP;
     await frame.evaluate((top) => {
       const el = document.querySelector('div.mid-viewport');
       if (el) el.scrollTop = top;
     }, scrollAtual);
 
-    await aguardar(1800); // aguarda Power BI renderizar o próximo lote
+    await aguardar(1800);
   }
 
   console.log('🎯 P6_CORRETOR: ' + linhas.size + ' linhas.');
@@ -144,7 +146,7 @@ async function navegarP6(frame) {
 
 // ─── Principal ────────────────────────────────────────────────────────────────
 (async () => {
-  console.log('🚀 Robô PBI v23 iniciando...');
+  console.log('🚀 Robô PBI v24 iniciando...');
 
   const browser = await chromium.launch({
     headless: true,
@@ -204,5 +206,5 @@ async function navegarP6(frame) {
 
   await browser.close();
   console.log('\n✅ Concluído. P1: ' + p1.length + ' | P6: ' + p6.length + ' | Total: ' + baseDeDados.length);
-  console.log('   Meta: P1 ~180 | P6 ~170');
+  console.log('   Meta: P1 ~180 | P6 ~172');
 })();
