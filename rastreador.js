@@ -1,8 +1,9 @@
 /**
- * rastreador.js — Robô PBI v22
- * Fix P6: mouse.wheel posicionado DENTRO da tabela (x=620, y=580)
- * O scrollDown em (73,548) era da barra lateral, não da tabela.
- * mouse.wheel na posição correta funciona igual ao P1.
+ * rastreador.js — Robô PBI v23
+ *
+ * Fix P6: scrollTop direto no div.mid-viewport (confirmado no diagnóstico).
+ * Sem mouse, sem wheel, sem navFlyout no caminho.
+ * mid-viewport: scrollHeight=2549, clientHeight=242, step=200px
  */
 const { chromium } = require('playwright');
 
@@ -19,24 +20,6 @@ async function encontrarFrame(page) {
   return page.mainFrame();
 }
 
-async function focarTabela(page, frame) {
-  try {
-    await frame.waitForSelector('div[role="gridcell"]', { state: 'visible', timeout: 20000 });
-    const celula = frame.locator('div[role="gridcell"]').last();
-    const box = await celula.boundingBox();
-    if (box) {
-      await page.mouse.move(box.x + 10, box.y + 10);
-      await page.mouse.click(box.x + 10, box.y + 10);
-    } else {
-      await celula.click({ force: true });
-    }
-    console.log('✅ Tabela focada.');
-  } catch (e) {
-    console.log('⚠️ Foco de emergência.');
-    await page.mouse.click(960, 540);
-  }
-}
-
 const LER_DOM = () => {
   const resultado = [];
   document.querySelectorAll('div[role="row"]').forEach(row => {
@@ -51,72 +34,117 @@ const LER_DOM = () => {
   return resultado;
 };
 
-// ─── Extração genérica: mouse.wheel na posição x,y ───────────────────────────
-async function extrairComWheel(page, frame, nomeTabela, mouseX, mouseY, maxSemNovo) {
-  console.log('\n📋 Extraindo: ' + nomeTabela + ' (wheel em x=' + mouseX + ', y=' + mouseY + ')');
+// ─── P1: wheel com mouse no lado esquerdo da tabela (longe do navFlyout) ──────
+async function extrairP1(page, frame) {
+  console.log('\n📋 Extraindo: P1_VENDA');
 
-  // Posiciona o mouse e clica uma vez para garantir foco
-  await page.mouse.move(mouseX, mouseY);
-  await page.mouse.click(mouseX, mouseY);
+  // Foca na tabela
+  try {
+    await frame.waitForSelector('div[role="gridcell"]', { state: 'visible', timeout: 20000 });
+    const box = await frame.locator('div[role="gridcell"]').last().boundingBox();
+    if (box) { await page.mouse.move(box.x + 10, box.y + 10); await page.mouse.click(box.x + 10, box.y + 10); }
+  } catch (_) { await page.mouse.click(960, 540); }
+  console.log('✅ Tabela focada.');
+
+  // P1 fica no lado direito — usa wheel em x=1100 (longe do navFlyout que fica em x=835)
+  const linhas = new Set();
+  let semNovo = 0;
+
+  for (let v = 0; v < 80 && semNovo < 6; v++) {
+    const batch = await frame.evaluate(LER_DOM);
+    let novos = 0;
+    batch.forEach(l => { if (!linhas.has(l)) { linhas.add(l); novos++; } });
+    if (novos > 0) { semNovo = 0; console.log('  [' + (v+1) + '] +' + novos + ' | total: ' + linhas.size); }
+    else semNovo++;
+
+    await page.mouse.move(1100, 500);
+    await page.mouse.wheel(0, 800);
+    await aguardar(2000);
+  }
+
+  console.log('🎯 P1_VENDA: ' + linhas.size + ' linhas.');
+  return Array.from(linhas);
+}
+
+// ─── P6: scrollTop direto no div.mid-viewport ─────────────────────────────────
+// Diagnostico confirmou: mid-viewport scrollHeight=2549, clientHeight=242
+// Sem mouse no caminho = sem navFlyout interceptando
+async function extrairP6(frame) {
+  console.log('\n📋 Extraindo: P6_CORRETOR (scrollTop direto)');
+
+  // Fecha o navFlyout se estiver aberto (clica fora dele)
+  await frame.evaluate(() => {
+    document.body.click();
+    document.querySelector('.navFlyout, section.navFlyout')?.blur?.();
+  });
   await aguardar(500);
 
   const linhas = new Set();
   let semNovo = 0;
+  let scrollAtual = 0;
+  const STEP = 200; // passo pequeno para não pular linhas
 
-  for (let v = 0; v < 120 && semNovo < maxSemNovo; v++) {
+  // Obtém o scrollHeight real do container
+  const maxScroll = await frame.evaluate(() => {
+    const el = document.querySelector('div.mid-viewport');
+    return el ? el.scrollHeight - el.clientHeight : 2400;
+  });
+  console.log('  📐 Scroll máximo do mid-viewport: ' + maxScroll + 'px');
+
+  for (let v = 0; v < 200 && semNovo < 12; v++) {
     const batch = await frame.evaluate(LER_DOM);
     let novos = 0;
     batch.forEach(l => { if (!linhas.has(l)) { linhas.add(l); novos++; } });
 
     if (novos > 0) {
       semNovo = 0;
-      console.log('  [' + (v+1) + '] +' + novos + ' | total: ' + linhas.size);
+      console.log('  [' + (v+1) + '] +' + novos + ' | total: ' + linhas.size + ' | scroll: ' + scrollAtual + 'px');
     } else {
       semNovo++;
     }
 
-    // Wheel com mouse dentro da tabela
-    await page.mouse.move(mouseX, mouseY);
-    await page.mouse.wheel(0, 800);
-    await aguardar(2000);
+    // Para se já passamos do scroll máximo
+    if (scrollAtual >= maxScroll) {
+      console.log('  ✅ Fim do scroll atingido (' + scrollAtual + '/' + maxScroll + 'px)');
+      break;
+    }
+
+    // Incrementa scrollTop diretamente — sem mouse, sem eventos que disparam navFlyout
+    scrollAtual += STEP;
+    await frame.evaluate((top) => {
+      const el = document.querySelector('div.mid-viewport');
+      if (el) el.scrollTop = top;
+    }, scrollAtual);
+
+    await aguardar(1800); // aguarda Power BI renderizar o próximo lote
   }
 
-  console.log('🎯 ' + nomeTabela + ': ' + linhas.size + ' linhas.');
+  console.log('🎯 P6_CORRETOR: ' + linhas.size + ' linhas.');
   return Array.from(linhas);
 }
 
 // ─── Navega P6 ────────────────────────────────────────────────────────────────
 async function navegarP6(frame) {
   console.log('\n➡️ Navegando para P6...');
-
   const clicou = await frame.evaluate(() => {
     for (const btn of document.querySelectorAll('button[aria-label]')) {
-      if (btn.getAttribute('aria-label') === 'Vendas - Dias S/ Vender') {
-        btn.click(); return true;
-      }
+      if (btn.getAttribute('aria-label') === 'Vendas - Dias S/ Vender') { btn.click(); return true; }
     }
     return false;
   }).catch(() => false);
 
-  if (clicou) {
-    console.log('✅ P6 via JS click.');
-    await aguardar(15000);
-    return;
-  }
+  if (clicou) { console.log('✅ P6 via JS click.'); await aguardar(15000); return; }
 
-  console.log('⚠️ JS click não encontrou. Usando Next Page...');
   for (let i = 1; i <= 5; i++) {
     await frame.locator('button[aria-label="Next Page"]').click({ force: true, timeout: 4000 }).catch(() => {});
-    console.log('  Clique ' + i + '/5');
-    await aguardar(2500);
+    console.log('  Clique ' + i + '/5'); await aguardar(2500);
   }
-  console.log('✅ Next Page concluído.');
-  await aguardar(15000);
+  console.log('✅ Next Page concluído.'); await aguardar(15000);
 }
 
 // ─── Principal ────────────────────────────────────────────────────────────────
 (async () => {
-  console.log('🚀 Robô PBI v22 iniciando...');
+  console.log('🚀 Robô PBI v23 iniciando...');
 
   const browser = await chromium.launch({
     headless: true,
@@ -153,45 +181,22 @@ async function navegarP6(frame) {
 
   const frame = await encontrarFrame(page);
 
-  // P1 — tabela fica no lado direito da tela, aproximadamente x=1100, y=500
   console.log('\n=== P1: Relação de Vendas ===');
-  await focarTabela(page, frame);
-  const p1BoundingBox = await frame.evaluate(() => {
-    const rows = document.querySelectorAll('div[role="gridcell"]');
-    if (rows.length > 5) {
-      const r = rows[Math.floor(rows.length / 2)].getBoundingClientRect();
-      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-    }
-    return { x: 1100, y: 500 };
-  });
-  console.log('  📍 Posição tabela P1: x=' + p1BoundingBox.x + ', y=' + p1BoundingBox.y);
-  const p1 = await extrairComWheel(page, frame, 'P1_VENDA', p1BoundingBox.x, p1BoundingBox.y, 6);
+  const p1 = await extrairP1(page, frame);
   p1.forEach(l => baseDeDados.push([hoje, 'P1_VENDA', l]));
 
-  // P6
   await navegarP6(frame);
   try { await frame.waitForSelector('div[role="gridcell"]', { state: 'visible', timeout: 20000 }); } catch (_) {}
   await aguardar(3000);
 
-  // Encontra posição real da tabela na P6
-  const p6BoundingBox = await frame.evaluate(() => {
-    const rows = document.querySelectorAll('div[role="gridcell"]');
-    if (rows.length > 5) {
-      const r = rows[Math.floor(rows.length / 2)].getBoundingClientRect();
-      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-    }
-    return { x: 620, y: 580 };
-  });
   console.log('\n=== P6: Dias Sem Vender ===');
-  console.log('  📍 Posição tabela P6: x=' + p6BoundingBox.x + ', y=' + p6BoundingBox.y);
-  const p6 = await extrairComWheel(page, frame, 'P6_CORRETOR', p6BoundingBox.x, p6BoundingBox.y, 10);
+  const p6 = await extrairP6(frame);
   p6.forEach(l => baseDeDados.push([hoje, 'P6_CORRETOR', l]));
 
   console.log('\n📤 Enviando ' + baseDeDados.length + ' linhas...');
   try {
     const resp = await fetch(WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(baseDeDados),
     });
     console.log('🎯 GAS:', await resp.text());
